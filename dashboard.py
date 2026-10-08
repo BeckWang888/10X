@@ -195,7 +195,15 @@ def build(cand, ind, hot_sub, techs, prices, sym_of, bt, demo=False, sel=None, s
     codes = set(cand["代號"]) | set(ind["代號"] if len(ind) else []) | set(surge["代號"] if surge is not None and len(surge) else [])
     cik = {c: int(cikmap[c]) for c in codes if c in cikmap}
     crash = {mk: m.get("crash", {}) for mk, m in bt.get("markets", {}).items()}
-    data = {"manual": manual_html(), "alerts": _clean(alert) if alert is not None and len(alert) else [], "crashStats": crash,
+    scr_p = config.ROOT / "data" / "screen" / "latest.json"
+    screen = json.loads(scr_p.read_text(encoding="utf-8")) if scr_p.exists() else {}
+    screen_stats = {mk: m.get("screens", {}) for mk, m in bt.get("markets", {}).items()}
+    for it in screen.get("items", []):
+        if it["市場"] == "美股" and it["代號"] not in cik and it["代號"] in cikmap:
+            cik[it["代號"]] = int(cikmap[it["代號"]])
+        if it["市場"] == "台股":
+            yf.setdefault(it["代號"], it.get("yf"))
+    data = {"manual": manual_html(), "screen": screen, "screenStats": screen_stats, "alerts": _clean(alert) if alert is not None and len(alert) else [], "crashStats": crash,
             "yf": yf, "cik": cik, "sel": sel or {}, "streak": streak or {}, "ai": ai or {}, "surgeStats": surge_stats,
             "surge": _clean(surge) if surge is not None and len(surge) else [],
             "trades": trades, "val": val, "cats": cats, "cand": rows, "ind": _clean(ind), "hot": hot_sub, "guide": guide, "base": base,
@@ -277,6 +285,15 @@ td.wrapc{white-space:normal;min-width:120px;max-width:170px}
 #man h3:first-of-type{border-top:0}
 #man ul{margin:2px 0;padding-left:20px}#man li{margin:1px 0}#man ul ul{color:var(--mute)}
 .manbtn{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:10px;padding:7px 14px;font:inherit;font-weight:600;cursor:pointer;margin-left:8px}
+.scr{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:10px;align-items:start}
+.sc-card{background:var(--card);border:1px solid var(--line);border-top:4px solid #0ea5e9;border-radius:12px;padding:10px 12px}
+.sc-card h3{margin:0;font-size:15px;cursor:pointer;user-select:none;display:flex;justify-content:space-between;gap:6px}
+.sc-card h3 .tog{color:var(--mute);font-size:12px;font-weight:400;white-space:nowrap}
+.sc-card .body{height:380px;overflow:hidden;position:relative}.sc-card.open .body{height:auto}
+.sc-card:not(.open) .body::after{content:"";position:absolute;left:0;right:0;bottom:0;height:56px;background:linear-gradient(transparent,var(--card))}
+.sc-card .more{display:block;width:100%;margin-top:6px;border:0;border-radius:8px;background:var(--chip);color:var(--ink);font:inherit;font-size:12px;padding:5px;cursor:pointer}.sc-it{padding:7px 0;border-top:1px solid var(--line);cursor:pointer;font-size:13px}
+.sc-it:hover{background:var(--chip)}.vd{display:inline-block;font-size:11px;font-weight:700;padding:0 7px;border-radius:99px;margin-right:4px;color:#fff;background:#71717a}
+.vd.建議加入{background:#16a34a}.vd.觀察{background:#ca8a04}.vd.不建議{background:#71717a}
 .links{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 .links a{font-size:12px;padding:3px 10px;border-radius:99px;background:var(--chip);color:var(--ink);text-decoration:none;border:1px solid var(--line)}
 .links a:hover{border-color:var(--acc);color:var(--acc)}
@@ -324,6 +341,10 @@ td.wrapc{white-space:normal;min-width:120px;max-width:170px}
 <h2>今日精選（依回測勝率＋基本面）</h2>
 <div class="small" id="pknote"></div>
 <div class="picks" id="picks" style="margin-top:8px"></div>
+
+<h2>🔎 每月自動篩選（新候選股，等你確認）</h2>
+<div class="small" id="scrnote"></div>
+<div class="scr" id="scr" style="margin-top:8px"></div>
 
 <details class="guide"><summary>怎麼看這張表：階段說明、進出場規則、回測（點開）</summary>
 <div class="steps">
@@ -419,7 +440,7 @@ function guide(){
 /* ---------- 市場切換 ---------- */
 let mk="";
 document.querySelectorAll("#mk button").forEach(b=>b.onclick=()=>{mk=b.dataset.m;
- document.querySelectorAll("#mk button").forEach(x=>x.classList.toggle("on",x==b));alertsView();picks();draw()});
+ document.querySelectorAll("#mk button").forEach(x=>x.classList.toggle("on",x==b));alertsView();picks();screenView();draw()});
 
 /* ---------- 急跌警報 ---------- */
 const AL={};D.alerts.forEach(a=>AL[a.代號]=a);
@@ -445,6 +466,38 @@ function links(code,m){
  return [["Yahoo Finance・公司簡介",`https://finance.yahoo.com/quote/${code}/profile/`],["StockAnalysis・完整財報",`https://stockanalysis.com/stocks/${code.toLowerCase()}/financials/`],
   ["SEC EDGAR・官方申報",cik?`https://www.sec.gov/edgar/browse/?CIK=${cik}`:`https://www.sec.gov/edgar/search/#/q=${code}`]]}
 const linkHtml=(code,m)=>`<div class="links">🔗 ${links(code,m).map(([t,u])=>`<a href="${u}" target="_blank" rel="noopener">${t}</a>`).join("")}</div>`;
+
+/* ---------- 每月自動篩選 ---------- */
+const S=D.screen||{}, SI=S.items||[], openScr=new Set();
+function scrItem(x){const a=x.ai||{};
+ const nums=x.市場=="美股"?`市值 ${x["市值(億美元)"]} 億美元・FCF 殖利率 ${pp(x.自由現金流殖利率,1)}・帳面市值比 ${x.帳面市值比?.toFixed(2)}・營收年增 ${pc(x.營收年增)}`
+  :`營收年增 ${pc(x.營收年增)}（加速 ${pc(x.營收加速)}）・${x.未確認獲利?'<span class="flag">未確認獲利</span>':"營業利益率 "+pp(x.營業利益率,1)}${x.股價淨值比?"・股價淨值比 "+x.股價淨值比.toFixed(1):""}`;
+ return `<div class="sc-it" data-c="${x.代號}">${a.verdict?`<span class="vd ${a.verdict}">${a.verdict}</span>`:x.已在清單?'<span class="vd">已在清單</span>':""}<span class="name">${x.名稱}</span><span class="code">${x.代號}・${x.市場}</span>　${num(x.股價)}
+  <div class="small">${a.theme&&a.theme!="不屬於"?`<b>${a.theme}</b>／${a.subtheme||""}・`:""}${nums}・離高點 ${pc(x.離一年高點)}・${x.階段||""}</div>
+  ${a.business?`<div class="small">📌 ${a.business}　🛡 ${a.moat||"–"}　🛣 ${a.runway||"–"}</div><div class="small">→ ${a.reason||""}${(a.risks||[]).length?"　⚠ "+a.risks.join("；"):""}</div>`:""}</div>`}
+function screenView(){
+ const el=document.getElementById("scr");
+ if(!SI.length){el.innerHTML='<div class="empty">尚未執行每月篩選（每月 3 日自動跑）</div>';document.getElementById("scrnote").textContent="";return}
+ const mks=mk?[mk]:["台股","美股"];
+ let html="";
+ mks.forEach(m=>Object.entries((S.routes||{})[m]||{}).forEach(([r,name])=>{
+  const all=SI.filter(x=>x.市場==m&&x.路線==r), show=all.filter(x=>x.顯示), off=all.filter(x=>x.主題符合===false);
+  const st=((D.screenStats[m]||{})[r])||{}, base=((D.screenStats[m]||{}).ALL)||{};
+  const key=m+r, op=openScr.has(key);
+  html+=`<div class="sc-card ${op?'open':''}" data-k="${key}"><h3>${m} ${r}：${name}<span class="tog">${op?"收合 ▴":"展開 ▾"}</span></h3><div class="body">
+   <div class="small" style="margin:3px 0 4px">條件：${(S.rules||{})[m+r]||""}</div>
+   ${st.n?`<div class="small">回測（10 年）：4 年內漲 10 倍 <b>${pp(st.p10x48,2)}</b>（平均 ${pp(base.p10x48,2)}）・2 年漲 3 倍 ${pp(st.p3x,1)}（平均 ${pp(base.p3x,1)}）・腰斬 ${pp(st.half24)}（平均 ${pp(base.half24)}）</div>`:""}
+   ${show.length?show.map(scrItem).join(""):'<div class="empty">本月沒有符合主題的</div>'}
+   ${off.length?`<div class="empty">另有 ${off.length} 檔主題不符（AI 判斷）：${off.map(x=>x.名稱).join("、")}</div>`:""}</div>
+   <button class="more">${op?"收合 ▴":"展開全部 ▾"}</button></div>`}));
+ const rm=(S.removals||[]).filter(x=>!mk||x.市場==mk);
+ if(rm.length){const op=openScr.has("rm");html+=`<div class="sc-card ${op?'open':''}" data-k="rm" style="border-top-color:#dc2626"><h3>建議檢視是否移除（${rm.length}）<span class="tog">${op?"收合 ▴":"展開 ▾"}</span></h3><div class="body"><div class="small">現有候選股裡基本面明顯轉壞的，只是提醒，要不要移除由你決定。</div>
+  ${rm.map(x=>`<div class="sc-it" data-c="${x.代號}"><span class="name">${x.名稱}</span><span class="code">${x.代號}・${x.市場}</span><div class="small">${x.原因}</div></div>`).join("")}</div><button class="more">${op?"收合 ▴":"展開全部 ▾"}</button></div>`;}
+ el.innerHTML=html;
+ el.querySelectorAll(".sc-it").forEach(e=>e.onclick=()=>openDlg(e.dataset.c));
+ el.querySelectorAll(".sc-card h3, .sc-card .more").forEach(b=>b.onclick=()=>{const k=b.closest(".sc-card").dataset.k;openScr.has(k)?openScr.delete(k):openScr.add(k);screenView()});
+ document.getElementById("scrnote").innerHTML=`篩選日期 ${S.date}（每月 3 日自動更新）。第一層量化條件和回測同一套；第二層由 AI 讀公司簡介和新聞判斷主題、護城河、跑道。<b>要加入候選清單，告訴 Claude「加入 代號」即可</b>（會寫進 data/screen/approved.csv，隔天開始每日追蹤）。`;
+}
 
 /* ---------- 今日精選 ---------- */
 const openCards=new Set();
@@ -564,12 +617,13 @@ function frame(d,tf){
 }
 
 async function openDlg(code){
- const r=C.find(x=>x.代號==code), ir=I.find(x=>x.代號==code), sr=D.surge.find(x=>x.代號==code), o=r||ir||sr;
+ const r=C.find(x=>x.代號==code), ir=I.find(x=>x.代號==code), sr=D.surge.find(x=>x.代號==code),
+  scr=SI.find(x=>x.代號==code)||(S.removals||[]).find(x=>x.代號==code), o=r||ir||sr||scr;
  if(!o)return;
  history.replaceState(null,"","#"+code);
  document.getElementById("dlg").classList.add("open");
  const base=D.base[o.市場]||{}, bt=r&&r.bt;
- document.getElementById("dhead").innerHTML=`<div class="ph"><span style="font-size:20px;font-weight:700">${o.名稱}</span><span class="code">${o.代號}・${o.市場}${r?"・"+r.角色:ir?"・指標股":"・暴衝雷達"}</span>
+ document.getElementById("dhead").innerHTML=`<div class="ph"><span style="font-size:20px;font-weight:700">${o.名稱}</span><span class="code">${o.代號}・${o.市場}${r?"・"+r.角色:ir?"・指標股":sr?"・暴衝雷達":"・每月篩選"}</span>
   <span class="px">${num(o.股價)}</span><span>${pc(o.日漲跌,2)}</span><span class="small">資料日期 ${o.資料日期||""}</span></div>
   ${linkHtml(o.代號,o.市場)}
   <div class="small" style="margin-top:6px">${o.主題||""}${o.子題?"・"+o.子題:""}${sr?`⚡ 近 5 日 ${pc(sr["5日漲幅"])}、量 ${sr.量能倍數.toFixed(1)} 倍・${sr.階段} ${sr.細分||""}　${sr.週期位置||""}`:""}${r&&r.產業已發動?' <span class="hot">● 產業發動</span>':''}</div>`;
@@ -634,7 +688,9 @@ async function openDlg(code){
    <span>市值</span><b>${r["市值(億美元)"]??"–"} 億美元</b><span>紅旗</span><b class="flag">${r.紅旗||"無"}</b></div></div>`:"";
  charts.forEach(c=>c.remove());charts=[];cdata=null;
  document.getElementById("lg1").textContent="載入中…";
- try{cdata=await (await fetch(`charts/${encodeURIComponent(code)}.json`)).json()}catch(e){document.getElementById("lg1").textContent="K 線資料載入失敗";return}
+ try{const resp=await fetch(`charts/${encodeURIComponent(code)}.json`);if(!resp.ok)throw 0;cdata=await resp.json()}
+ catch(e){document.getElementById("lg1").textContent=scr&&!r?"這檔還不在每日追蹤清單，沒有 K 線；確認加入候選後隔天就會有。可先點上方公司資料連結。":"K 線資料載入失敗";
+  ["lg2","lg3","ribbon"].forEach(i=>document.getElementById(i).textContent="");return}
  drawCharts(cdata,r);
 }
 
@@ -691,7 +747,7 @@ function drawCharts(d,r){
 
 [...new Set(C.map(r=>r.主題))].forEach(t=>ft.add(new Option(t,t)));
 [ft,fh].forEach(e=>e.onchange=draw);document.getElementById("q").oninput=draw;
-rule();guide();alertsView();picks();draw();ind();
+rule();guide();alertsView();picks();screenView();draw();ind();
 document.getElementById("mantext").innerHTML=D.manual||"（找不到說明書）";
 document.getElementById("manbtn").onclick=()=>document.getElementById("man").classList.add("open");
 document.getElementById("man").onclick=e=>{if(e.target.id=="man")e.target.classList.remove("open")};

@@ -12,6 +12,13 @@ import config
 
 def load_watchlist():
     df = pd.read_excel(config.WATCHLIST, sheet_name="觀察清單", dtype=str)
+    # 每月篩選後、使用者確認要加入的股票（data/screen/approved.csv）
+    extra = config.ROOT / "data" / "screen" / "approved.csv"
+    if extra.exists():
+        add = pd.read_csv(extra, dtype=str, encoding="utf-8-sig")
+        if len(add):
+            add = add[~add["代號"].isin(df["代號"])].fillna({"保留(Y/N)": "Y", "用途": "候選", "評分模型": "一般"})
+            df = pd.concat([df, add], ignore_index=True)
     df = df[df["保留(Y/N)"].str.upper().str.strip() == "Y"].copy()
     df["代號"] = df["代號"].str.strip()
     return df.reset_index(drop=True)

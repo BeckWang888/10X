@@ -486,6 +486,20 @@ def main():
                     print(f"    {b['lo']:>8.3f}～{b['hi']:<8.3f} n={b['n']:>6}  12月勝率 {b['win12'] or 0:.0%}  贏大盤 {b['beat12'] or 0:.0%}  "
                           f"中位 {b['med12'] or 0:+.0%}  2年3倍 {b['p3x'] or 0:.1%}  4年5倍 {b['p5x48'] or 0:.1%}  "
                           f"4年10倍 {b['p10x48'] or 0:.2%}  腰斬 {b['half24'] or 0:.0%}")
+        # 每月篩選的兩條路線（和 screener.py 同一套條件）的歷史表現
+        import screener
+        sdf = df
+        if market == "美股" and "fcf_yield" in df:
+            sdf = df[df["fcf_yield"].notna() & df["bm"].notna()].copy()
+            sdf["fcf_r"] = sdf.groupby("date")["fcf_yield"].rank(pct=True)
+            sdf["bm_r"] = sdf.groupby("date")["bm"].rank(pct=True)
+        if market == "台股" or "fcf_yield" in df:
+            masks = screener.route_masks(sdf, market)
+            result["markets"][market]["screens"] = {"ALL": stat(sdf), **{k: stat(sdf[v]) for k, v in masks.items() if v.sum() >= 100}}
+            print("  --- 每月篩選路線的歷史表現")
+            for k, v in result["markets"][market]["screens"].items():
+                print(f"  {k:<4} n={v['n']:>7} 檔{v['n_stocks']:>5}  12月勝率 {v['win12'] or 0:.0%}  中位 {v['med12'] or 0:+.0%}  "
+                      f"2年3倍 {v['p3x'] or 0:.1%}  4年5倍 {v['p5x48'] or 0:.1%}  4年10倍 {v['p10x48'] or 0:.2%}  腰斬 {v['half24'] or 0:.0%}")
         cr = summarize_crash(df)
         result["markets"][market]["crash"] = cr
         print("  --- 急跌（近 5 日跌 ≥15% 且量 ≥ 季均量 2 倍）之後")

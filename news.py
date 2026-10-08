@@ -147,3 +147,26 @@ def analyze_many(rows):
                 out[r["代號"]] = a
     print(f"  AI 分析完成 {len(out)}/{len(rows)} 檔")
     return out
+
+
+def ask_json(prompt, model):
+    """通用：送出提示、取回 JSON（每月篩選的 AI 初評用）"""
+    body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.2, "thinkingConfig": {"thinkingLevel": "low"}}}
+    for attempt in range(4):
+        try:
+            r = requests.post(f"{API}/models/{model}:generateContent", headers=_headers(), json=body, timeout=60)
+            if r.status_code == 400 and "thinkingConfig" in body["generationConfig"]:
+                body["generationConfig"].pop("thinkingConfig")
+                continue
+            if r.status_code in (429, 500, 503):
+                time.sleep(10 * (attempt + 1))
+                continue
+            r.raise_for_status()
+            raw = "".join(x.get("text", "") for x in r.json()["candidates"][0]["content"]["parts"])
+            m = re.search(r"\{.*\}", raw, re.S)
+            return json.loads(m.group(0)) if m else None
+        except Exception as e:
+            print(f"\n  AI 失敗：{e}")
+            time.sleep(5)
+    return None

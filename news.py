@@ -32,7 +32,8 @@ def pick_model():
     if os.environ.get("GEMINI_MODEL"):
         return os.environ["GEMINI_MODEL"]
     r = requests.get(f"{API}/models", headers=_headers(), params={"pageSize": 200}, timeout=30)
-    r.raise_for_status()
+    if r.status_code != 200:   # 印出 Google 的錯誤說明（不含金鑰），例如金鑰無效
+        raise RuntimeError(f"{r.status_code} {r.json().get('error', {}).get('message', r.text[:200])}")
     names = [m["name"].split("/")[-1] for m in r.json().get("models", [])
              if "generateContent" in m.get("supportedGenerationMethods", [])]
     flash = [n for n in names if re.fullmatch(r"gemini-\d+(\.\d+)?-flash-lite", n)]   # 正式版 Flash-Lite

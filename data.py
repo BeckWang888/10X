@@ -163,3 +163,34 @@ def fetch_tw_monthly_revenue(code):
     _cache_path("mrev_" + code).write_text(json.dumps(out), encoding="utf-8")
     time.sleep(0.5)
     return out
+
+
+# ---------- 當日／五日分時（5 分鐘線）----------
+def fetch_intraday(symbols_by_market):
+    """{市場: [yf 代號]} → {yf 代號: {t, o, h, l, c, v}}。時間換成交易所當地時間（圖上才會顯示 09:00 開盤）"""
+    import yfinance as yf
+    tz = {"台股": "Asia/Taipei", "美股": "America/New_York"}
+    out = {}
+    for market, syms in symbols_by_market.items():
+        syms = sorted(set(syms))
+        for i in range(0, len(syms), 100):
+            chunk = syms[i:i + 100]
+            try:
+                raw = yf.download(chunk, period="5d", interval="5m", auto_adjust=True, group_by="ticker",
+                                  threads=True, progress=False, timeout=30)
+            except Exception:
+                continue
+            multi = isinstance(raw.columns, pd.MultiIndex)
+            for s in chunk:
+                try:
+                    d = (raw[s] if multi else raw)[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"])
+                except KeyError:
+                    continue
+                if d.empty:
+                    continue
+                idx = d.index.tz_convert(tz[market]) if d.index.tz is not None else d.index
+                t = [int(x.replace(tzinfo=None).timestamp() - pd.Timestamp("1970-01-01").timestamp()) for x in idx]
+                r = lambda a: [round(float(x), 3) for x in a]
+                out[s] = {"t": t, "o": r(d["Open"]), "h": r(d["High"]), "l": r(d["Low"]), "c": r(d["Close"]),
+                          "v": [0 if pd.isna(x) else int(x) for x in d["Volume"]]}
+    return out

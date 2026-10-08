@@ -68,6 +68,20 @@ def pick_trade(bt, market, rs, rv):
     return None
 
 
+def _ohlc(px, rule, n):
+    """日線換算成週 K（W-FRI）或月 K（ME），取最後 n 根"""
+    g = px.resample(rule)
+    d = pd.DataFrame({"o": g["Open"].first(), "h": g["High"].max(), "l": g["Low"].min(),
+                      "c": g["Close"].last(), "v": g["Volume"].sum()}).dropna(subset=["c"]).iloc[-n:]
+    d["o"] = d["o"].fillna(d["c"])
+    dec = 2 if float(d["c"].iloc[-1]) >= 10 else 3
+    r = lambda a: [round(float(x), dec) for x in a]
+    # 週／月 K 的時間用該期第一個交易日
+    first = px["Close"].resample(rule).apply(lambda s: s.index[0] if len(s) else pd.NaT).reindex(d.index)
+    return {"t": [x.strftime("%Y-%m-%d") for x in first], "o": r(d["o"]), "h": r(np.maximum(d["h"], d[["o", "c"]].max(axis=1))),
+            "l": r(np.minimum(d["l"], d[["o", "c"]].min(axis=1))), "c": r(d["c"]), "v": [int(x) for x in d["v"].fillna(0)]}
+
+
 def chart_json(t, px):
     s = t["series"].iloc[-520:]
     p = px.reindex(s.index)
@@ -86,11 +100,12 @@ def chart_json(t, px):
         "ma50": r(s["ma50"]), "ma150": r(s["ma150"]), "rsi": r(s["rsi"], 1),
         "dif": r(dif.reindex(s.index), dec + 1), "dea": r(dea.reindex(s.index), dec + 1),
         "st": [int(x) for x in s["stage"]],
+        "w": _ohlc(px, "W-FRI", 260), "mo": _ohlc(px, "ME", 120),
     }
 
 
 def build(cand, ind, hot_sub, techs, prices, sym_of, bt, demo=False, sel=None, streak=None,
-          surge=None, surge_px=None, ai=None, alert=None):
+          surge=None, surge_px=None, ai=None, alert=None, intraday=None):
     now = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d %H:%M") + "（台灣時間）"
     rows = _clean(cand)
     for r in rows:
@@ -115,13 +130,16 @@ def build(cand, ind, hot_sub, techs, prices, sym_of, bt, demo=False, sel=None, s
     for code, t in techs.items():
         px = prices.get(sym_of.get(code))
         if px is not None:
-            (chart_dir / f"{code}.json").write_text(json.dumps(chart_json(t, px), separators=(",", ":")),
-                                                    encoding="utf-8")
+            cj = chart_json(t, px)
+            cj["i"] = (intraday or {}).get(sym_of.get(code))
+            (chart_dir / f"{code}.json").write_text(json.dumps(cj, separators=(",", ":")), encoding="utf-8")
 
     for code, (px, s) in (surge_px or {}).items():           # 暴衝雷達的股票（可能不在觀察清單）
         if code not in techs:
-            (chart_dir / f"{code}.json").write_text(json.dumps(chart_json({"series": s}, px), separators=(",", ":")),
-                                                    encoding="utf-8")
+            cj = chart_json({"series": s}, px)
+            ys = dict(zip(surge["代號"], surge["yf"])).get(code) if surge is not None and "yf" in surge else None
+            cj["i"] = (intraday or {}).get(ys)
+            (chart_dir / f"{code}.json").write_text(json.dumps(cj, separators=(",", ":")), encoding="utf-8")
     surge_stats = {mk: m.get("surge", {}) for mk, m in bt.get("markets", {}).items()}
     trades = {mk: m.get("trades") for mk, m in bt.get("markets", {}).items() if m.get("trades")}
     val = {mk: (m.get("model") or {}).get("val", {}) for mk, m in bt.get("markets", {}).items()}
@@ -156,12 +174,14 @@ TEMPLATE = r"""<!doctype html>
 <html lang="zh-Hant"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>十倍股追蹤器</title>
+<script>try{if(localStorage.getItem("theme")==="light")document.documentElement.dataset.theme="light"}catch(e){}</script>
 <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
-:root{--bg:#f6f5f2;--card:#fff;--ink:#1d1d1f;--mute:#6b6b70;--line:#e4e2dc;--acc:#c2410c;
+:root{--bg:#141416;--card:#1d1d20;--ink:#ececee;--mute:#9a9aa2;--line:#2c2c31;--acc:#c2410c;
+--up:#f87171;--dn:#4ade80;--chip:#26262b;--good:#3b2f12;color-scheme:dark}
+:root[data-theme="light"]{--bg:#f6f5f2;--card:#fff;--ink:#1d1d1f;--mute:#6b6b70;--line:#e4e2dc;--acc:#c2410c;
 --up:#dc2626;--dn:#16a34a;--chip:#f0eee8;--good:#fef3c7}
-@media (prefers-color-scheme:dark){:root{--bg:#141416;--card:#1d1d20;--ink:#ececee;--mute:#9a9aa2;
---line:#2c2c31;--chip:#26262b;--up:#f87171;--dn:#4ade80;--good:#3b2f12}}
+
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
 font:14px/1.55 -apple-system,"Noto Sans TC","Microsoft JhengHei",sans-serif}
 .wrap{max-width:1500px;margin:0 auto;padding:20px 16px 60px}
@@ -248,7 +268,8 @@ td.wrapc{white-space:normal;min-width:120px;max-width:170px}
 .ribbon{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:11px;color:var(--mute);margin:4px}
 .ribbon i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:3px;vertical-align:-1px}
 </style></head><body><div class="wrap">
-<h1>十倍股追蹤器</h1>
+<div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><h1>十倍股追蹤器</h1>
+<button id="theme" style="border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:99px;padding:5px 12px;font:inherit;font-size:13px;cursor:pointer"></button></div>
 <div class="sub" id="sub"></div>
 <div class="seg" id="mk"><button data-m="" class="on">全部</button><button data-m="台股">台股</button><button data-m="美股">美股</button></div>
 
@@ -294,7 +315,7 @@ td.wrapc{white-space:normal;min-width:120px;max-width:170px}
  <div id="dhead"></div>
  <div class="boxes" id="dboxes"></div>
  <div class="chartbox">
-  <div class="rng" id="rng"><button data-n="126">6 個月</button><button data-n="252" class="on">1 年</button><button data-n="520">2 年</button></div>
+  <div class="rng" id="rng"><button data-tf="d1">當日</button><button data-tf="d5">五日</button><button data-tf="day" class="on">日K</button><button data-tf="week">週K</button><button data-tf="month">月K</button></div>
   <div class="ribbon" id="ribbon"></div>
   <div class="legend" id="lg1"></div><div id="c1" style="height:340px"></div>
   <div class="legend" id="lg2"></div><div id="c2" style="height:130px"></div>
@@ -459,13 +480,35 @@ function ind(){
 }
 
 /* ---------- 個股視窗 ---------- */
-let charts=[], cdata=null, curN=252;
+let charts=[], cdata=null, curR=null, tf="day";
 function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim()}
 function closeDlg(){document.getElementById("dlg").classList.remove("open");charts.forEach(c=>c.remove());charts=[];if(location.hash)history.replaceState(null,"",location.pathname)}
 document.addEventListener("keydown",e=>{if(e.key=="Escape")closeDlg()});
 document.getElementById("dlg").onclick=e=>{if(e.target.id=="dlg")closeDlg()};
-document.querySelectorAll("#rng button").forEach(b=>b.onclick=()=>{curN=+b.dataset.n;document.querySelectorAll("#rng button").forEach(x=>x.classList.toggle("on",x==b));setRange()});
-function setRange(){if(!cdata)return;const n=cdata.t.length;charts.forEach(c=>c.timeScale().setVisibleLogicalRange({from:Math.max(0,n-curN),to:n+3}))}
+document.querySelectorAll("#rng button").forEach(b=>b.onclick=()=>{tf=b.dataset.tf;document.querySelectorAll("#rng button").forEach(x=>x.classList.toggle("on",x==b));if(cdata)drawCharts(cdata,curR)});
+
+/* 指標計算（週 K、月 K、分時用；日 K 用 Python 算好的） */
+function sma(a,n){const o=[];let s=0;for(let i=0;i<a.length;i++){s+=a[i];if(i>=n)s-=a[i-n];o.push(i>=n-1?s/n:null)}return o}
+function ema(a,n){const o=[],k=2/(n+1);let p=null;for(const x of a){p=p==null?x:x*k+p*(1-k);o.push(p)}return o}
+function rsiW(a,n=14){const o=[null];let up=0,dn=0;for(let i=1;i<a.length;i++){const d=a[i]-a[i-1],u=Math.max(d,0),w=Math.max(-d,0);
+ if(i<=n){up+=u/n;dn+=w/n}else{up=(up*(n-1)+u)/n;dn=(dn*(n-1)+w)/n}o.push(i>=n?(dn==0?100:100-100/(1+up/dn)):null)}return o}
+function macdOf(c){const f=ema(c,12),s=ema(c,26),dif=c.map((_,i)=>f[i]-s[i]),dea=ema(dif,9);return {dif,dea}}
+function vwapDaily(T,h,l,c,v){const o=[];let pv=0,vv=0,day=null;for(let i=0;i<T.length;i++){const dd=Math.floor(T[i]/86400);if(dd!==day){day=dd;pv=0;vv=0}
+ pv+=(h[i]+l[i]+c[i])/3*v[i];vv+=v[i];o.push(vv?pv/vv:c[i])}return o}
+
+/* 依週期整理出要畫的資料 */
+function frame(d,tf){
+ if(tf=="day")return {T:d.t,o:d.o,h:d.h,l:d.l,c:d.c,v:d.v,st:d.st,dif:d.dif,dea:d.dea,rsi:d.rsi,
+  ma:[["50日線","#f59e0b",d.ma50],["150日線","#3b82f6",d.ma150]],show:252,intra:false};
+ let b;
+ if(tf=="week"||tf=="month"){b=tf=="week"?d.w:d.mo;if(!b)return null;
+  const ma=tf=="week"?[["10週線","#f59e0b",sma(b.c,10)],["30週線","#3b82f6",sma(b.c,30)]]:[["6月線","#f59e0b",sma(b.c,6)],["12月線","#3b82f6",sma(b.c,12)]];
+  return {T:b.t,o:b.o,h:b.h,l:b.l,c:b.c,v:b.v,...macdOf(b.c),rsi:rsiW(b.c),ma,show:tf=="week"?156:120,intra:false}}
+ b=d.i;if(!b||!b.t.length)return null;
+ let s=0;if(tf=="d1"){const last=Math.floor(b.t[b.t.length-1]/86400);s=b.t.findIndex(x=>Math.floor(x/86400)==last)}
+ const sl=a=>a.slice(s), T=sl(b.t), o=sl(b.o), h=sl(b.h), l=sl(b.l), c=sl(b.c), v=sl(b.v);
+ return {T,o,h,l,c,v,...macdOf(c),rsi:rsiW(c),ma:[["均價","#f59e0b",vwapDaily(T,h,l,c,v)]],show:T.length,intra:true};
+}
 
 async function openDlg(code){
  const r=C.find(x=>x.代號==code), ir=I.find(x=>x.代號==code), sr=D.surge.find(x=>x.代號==code), o=r||ir||sr;
@@ -543,54 +586,66 @@ async function openDlg(code){
 }
 
 function drawCharts(d,r){
+ curR=r;charts.forEach(c=>c.remove());charts=[];
+ const F=frame(d,tf);
+ if(!F){document.getElementById("lg1").textContent=tf.startsWith("d")&&tf!="day"?"這檔沒有分時資料（每天收盤後更新一次）":"沒有資料";document.getElementById("lg2").textContent="";document.getElementById("lg3").textContent="";document.getElementById("ribbon").textContent="";return}
  const LW=LightweightCharts, up=css("--up"), dn=css("--dn"), mute=css("--mute"), line=css("--line");
  const opt=(time,logo)=>({autoSize:true,layout:{background:{color:"transparent"},textColor:mute,fontSize:11,attributionLogo:!!logo},
   grid:{vertLines:{color:line},horzLines:{color:line}},rightPriceScale:{borderColor:line,minimumWidth:72},
-  timeScale:{borderColor:line,visible:time,rightOffset:3},crosshair:{mode:0},localization:{dateFormat:"yyyy-MM-dd"}});
- const T=d.t, pts=a=>a.map((v,i)=>v==null?{time:T[i]}:{time:T[i],value:v});
- // 主圖：階段底色 + K 線 + 均線 + 成交量
+  timeScale:{borderColor:line,visible:time,rightOffset:3,timeVisible:F.intra,secondsVisible:false},crosshair:{mode:0},localization:{dateFormat:"yyyy-MM-dd"}});
+ const T=F.T, pts=a=>a.map((v,i)=>v==null||isNaN(v)?{time:T[i]}:{time:T[i],value:v});
+ // 主圖：（日 K）階段底色 + K 線 + 均線 + 成交量
  const c1=LW.createChart(document.getElementById("c1"),opt(false,true));
- const bg=c1.addHistogramSeries({priceScaleId:"bg",priceLineVisible:false,lastValueVisible:false});
- c1.priceScale("bg").applyOptions({scaleMargins:{top:0,bottom:0},visible:false});
- bg.setData(T.map((t,i)=>({time:t,value:1,color:(d.st[i]>=0?D.colors[d.st[i]]:"#888")+"33"})));
+ if(F.st){const bg=c1.addHistogramSeries({priceScaleId:"bg",priceLineVisible:false,lastValueVisible:false});
+  c1.priceScale("bg").applyOptions({scaleMargins:{top:0,bottom:0},visible:false});
+  bg.setData(T.map((t,i)=>({time:t,value:1,color:(F.st[i]>=0?D.colors[F.st[i]]:"#888")+"33"})));}
  const vol=c1.addHistogramSeries({priceScaleId:"vol",priceFormat:{type:"volume"},priceLineVisible:false,lastValueVisible:false});
  c1.priceScale("vol").applyOptions({scaleMargins:{top:0.82,bottom:0},visible:false});
- vol.setData(T.map((t,i)=>({time:t,value:d.v[i],color:(d.c[i]>=d.o[i]?up:dn)+"66"})));
+ vol.setData(T.map((t,i)=>({time:t,value:F.v[i],color:(F.c[i]>=F.o[i]?up:dn)+"66"})));
  const k=c1.addCandlestickSeries({upColor:up,downColor:dn,borderUpColor:up,borderDownColor:dn,wickUpColor:up,wickDownColor:dn});
- k.setData(T.map((t,i)=>({time:t,open:d.o[i],high:d.h[i],low:d.l[i],close:d.c[i]})));
- const m50=c1.addLineSeries({color:"#f59e0b",lineWidth:1.5,priceLineVisible:false,lastValueVisible:false});m50.setData(pts(d.ma50));
- const m150=c1.addLineSeries({color:"#3b82f6",lineWidth:2,priceLineVisible:false,lastValueVisible:false});m150.setData(pts(d.ma150));
- if(r&&r.出場線&&r.階段==D.order[0])k.createPriceLine({price:r.出場線,color:dn,lineStyle:2,title:"停損"});
- if(r&&r.起漲日&&T.includes(r.起漲日))k.setMarkers([{time:r.起漲日,position:"belowBar",color:colorOf(D.order[1]),shape:"arrowUp",text:"起漲"}]);
+ k.setData(T.map((t,i)=>({time:t,open:F.o[i],high:F.h[i],low:F.l[i],close:F.c[i]})));
+ F.ma.forEach(([n,col,vals],j)=>{const s=c1.addLineSeries({color:col,lineWidth:j?2:1.5,priceLineVisible:false,lastValueVisible:false});s.setData(pts(vals))});
+ if(tf=="day"&&r&&r.出場線&&r.階段==D.order[0])k.createPriceLine({price:r.出場線,color:dn,lineStyle:2,title:"停損"});
+ if(tf=="day"&&r&&r.起漲日&&T.includes(r.起漲日))k.setMarkers([{time:r.起漲日,position:"belowBar",color:colorOf(D.order[1]),shape:"arrowUp",text:"起漲"}]);
  // MACD
  const c2=LW.createChart(document.getElementById("c2"),opt(false));
  const osc=c2.addHistogramSeries({priceLineVisible:false,lastValueVisible:false});
- osc.setData(T.map((t,i)=>{const v=d.dif[i]-d.dea[i];return {time:t,value:+v.toFixed(4),color:v>=0?up:dn}}));
- const dif=c2.addLineSeries({color:"#f59e0b",lineWidth:1.5,priceLineVisible:false,lastValueVisible:false});dif.setData(pts(d.dif));
- const dea=c2.addLineSeries({color:"#3b82f6",lineWidth:1.5,priceLineVisible:false,lastValueVisible:false});dea.setData(pts(d.dea));
+ osc.setData(T.map((t,i)=>{const v=F.dif[i]-F.dea[i];return {time:t,value:+v.toFixed(4),color:v>=0?up:dn}}));
+ const dif=c2.addLineSeries({color:"#f59e0b",lineWidth:1.5,priceLineVisible:false,lastValueVisible:false});dif.setData(pts(F.dif));
+ const dea=c2.addLineSeries({color:"#3b82f6",lineWidth:1.5,priceLineVisible:false,lastValueVisible:false});dea.setData(pts(F.dea));
  // RSI
  const c3=LW.createChart(document.getElementById("c3"),opt(true));
- const rsi=c3.addLineSeries({color:"#9333ea",lineWidth:1.5,priceLineVisible:false});rsi.setData(pts(d.rsi));
+ const rsi=c3.addLineSeries({color:"#9333ea",lineWidth:1.5,priceLineVisible:false});rsi.setData(pts(F.rsi));
  rsi.createPriceLine({price:70,color:up,lineStyle:2,axisLabelVisible:false});rsi.createPriceLine({price:30,color:dn,lineStyle:2,axisLabelVisible:false});
- c3.priceScale("right").applyOptions({autoScale:false});
  rsi.applyOptions({autoscaleInfoProvider:()=>({priceRange:{minValue:0,maxValue:100}})});
  charts=[c1,c2,c3];
  let lock=false;
  charts.forEach(c=>c.timeScale().subscribeVisibleLogicalRangeChange(rg=>{if(lock||!rg)return;lock=true;charts.forEach(o=>o!==c&&o.timeScale().setVisibleLogicalRange(rg));lock=false}));
- const f=v=>v==null?"–":num(v);
+ const f=v=>v==null||isNaN(v)?"–":num(v);
+ const tlabel=i=>F.intra?new Date(T[i]*1000).toISOString().slice(5,16).replace("T"," "):T[i];
  const legend=i=>{if(i==null||i<0||i>=T.length)i=T.length-1;
-  const chg=i>0?d.c[i]/d.c[i-1]-1:null;
-  document.getElementById("lg1").innerHTML=`${T[i]}　開 ${f(d.o[i])} 高 ${f(d.h[i])} 低 ${f(d.l[i])} 收 <b>${f(d.c[i])}</b> ${pc(chg,2)}　量 ${d.v[i].toLocaleString()}　<span style="color:#f59e0b">50日線 ${f(d.ma50[i])}</span>　<span style="color:#3b82f6">150日線 ${f(d.ma150[i])}</span>　${d.st[i]>=0?tag(D.order[d.st[i]]):""}`;
-  document.getElementById("lg2").innerHTML=`MACD(12,26,9)　<span style="color:#f59e0b">DIF ${d.dif[i]?.toFixed(3)}</span>　<span style="color:#3b82f6">MACD ${d.dea[i]?.toFixed(3)}</span>　柱 ${(d.dif[i]-d.dea[i]).toFixed(3)}`;
-  document.getElementById("lg3").innerHTML=`<span style="color:#9333ea">RSI(14) ${d.rsi[i]?.toFixed(1)??"–"}</span>　（70 以上偏熱、30 以下偏冷）`;};
+  const chg=i>0?F.c[i]/F.c[i-1]-1:null;
+  document.getElementById("lg1").innerHTML=`${tlabel(i)}　開 ${f(F.o[i])} 高 ${f(F.h[i])} 低 ${f(F.l[i])} 收 <b>${f(F.c[i])}</b> ${pc(chg,2)}　量 ${F.v[i].toLocaleString()}　`+
+   F.ma.map(([n,col,vals])=>`<span style="color:${col}">${n} ${f(vals[i])}</span>`).join("　")+(F.st&&F.st[i]>=0?"　"+tag(D.order[F.st[i]]):"");
+  document.getElementById("lg2").innerHTML=`MACD(12,26,9)　<span style="color:#f59e0b">DIF ${F.dif[i]?.toFixed(3)}</span>　<span style="color:#3b82f6">MACD ${F.dea[i]?.toFixed(3)}</span>　柱 ${(F.dif[i]-F.dea[i]).toFixed(3)}`;
+  document.getElementById("lg3").innerHTML=`<span style="color:#9333ea">RSI(14) ${F.rsi[i]?.toFixed(1)??"–"}</span>　（70 以上偏熱、30 以下偏冷）`;};
  charts.forEach(c=>c.subscribeCrosshairMove(p=>legend(p&&p.logical!=null?Math.round(p.logical):null)));
  legend(null);
- document.getElementById("ribbon").innerHTML="K 線底色＝當時的階段："+D.order.map((s,i)=>`<span><i style="background:${D.colors[i]}"></i>${s}</span>`).join("");
- setRange();
+ document.getElementById("ribbon").innerHTML=tf=="day"?"K 線底色＝當時的階段："+D.order.map((s,i)=>`<span><i style="background:${D.colors[i]}"></i>${s}</span>`).join(""):
+  F.intra?"5 分鐘 K 線（每天收盤後更新一次，不是即時報價）；黃線＝當日均價":"由日線換算；階段底色只在日 K 顯示";
+ const n=T.length;charts.forEach(c=>c.timeScale().setVisibleLogicalRange({from:Math.max(0,n-F.show),to:n+3}));
 }
 
 [...new Set(C.map(r=>r.主題))].forEach(t=>ft.add(new Option(t,t)));
 [ft,fh].forEach(e=>e.onchange=draw);document.getElementById("q").oninput=draw;
 rule();guide();alertsView();picks();draw();ind();
+/* ---------- 深色／淺色 ---------- */
+const themeBtn=document.getElementById("theme");
+const setThemeLabel=()=>themeBtn.textContent=document.documentElement.dataset.theme==="light"?"🌙 深色":"☀️ 淺色";
+setThemeLabel();
+themeBtn.onclick=()=>{const light=document.documentElement.dataset.theme!=="light";
+ if(light)document.documentElement.dataset.theme="light";else delete document.documentElement.dataset.theme;
+ try{localStorage.setItem("theme",light?"light":"dark")}catch(e){}
+ setThemeLabel();if(cdata&&document.getElementById("dlg").classList.contains("open"))drawCharts(cdata,curR)};
 if(location.hash.length>1)openDlg(decodeURIComponent(location.hash.slice(1)));
 </script></body></html>"""

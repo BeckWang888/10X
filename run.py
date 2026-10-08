@@ -143,7 +143,22 @@ def main():
         (config.HISTORY_DIR / f"picks_{datetime.now():%Y%m%d}.json").write_text(
             json.dumps(sel, ensure_ascii=False), encoding="utf-8")
 
-    out = dashboard.build(cand, ind, hot_sub, techs, prices, sym_of, bt, demo=demo,
+    # 當日／五日分時（5 分鐘線），給個股 K 線的「當日」「五日」用
+    intraday = {}
+    if not demo:
+        from data import fetch_intraday
+        mk_of = dict(zip(wl["代號"], wl["市場"]))
+        by_mk = {"台股": [], "美股": []}
+        for c in techs:
+            if mk_of.get(c) in by_mk and sym_of.get(c):
+                by_mk[mk_of[c]].append(sym_of[c])
+        if len(surge):
+            for m, y in zip(surge["市場"], surge["yf"]):
+                by_mk[m].append(y)
+        intraday = fetch_intraday(by_mk)
+        print(f"  分時資料：{len(intraday)} 檔")
+
+    out = dashboard.build(cand, ind, hot_sub, techs, prices, sym_of, bt, demo=demo, intraday=intraday,
                           sel=sel, streak=streak, surge=surge, surge_px=surge_px, ai=ai, alert=alert)
     print(f"\n完成，共評分 {len(cand)} 檔。前 10 名：")
     print(cand[["代號", "名稱", "股價", "階段", "細分", "總分"]].head(10).to_string(index=False))

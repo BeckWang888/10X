@@ -101,6 +101,16 @@ def main():
             print(f"  雷達失敗：{e}")
     sel["⚡ 突然暴衝"] = {mk: surge[surge["市場"] == mk]["代號"].tolist()[:8] if len(surge) else [] for mk in ("台股", "美股")}
 
+    # 急跌警報：觀察清單＋暴衝股
+    import alerts
+    alert = alerts.scan(wl, techs, prices, sym_of, surge, surge_px) if not demo else pd.DataFrame()
+    if len(alert):
+        fcf = {c: (f or {}).get("fcf_yield") for c, f in us_fund.items()}
+        if len(surge) and "自由現金流殖利率" in surge:
+            fcf.update(dict(zip(surge["代號"], surge["自由現金流殖利率"])))
+        alert["自由現金流殖利率"] = alert["代號"].map(fcf)
+        print(f"  急跌警報：{len(alert)} 檔")
+
     # 霸榜：和過去每天的精選比，連續上榜幾天
     config.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     streak = picks.streaks(config.HISTORY_DIR, sel) if not demo else {}
@@ -118,6 +128,11 @@ def main():
                     if cat == "⚡ 突然暴衝":
                         r["_extra"] = f"近 5 日成交量是季均量的 {r['量能倍數']:.1f} 倍，請特別說明暴衝原因與是否為新商機。"
                     rows.append(r)
+        for _, a in alert.iterrows():
+            src = cand if a["代號"] in set(cand["代號"]) else surge
+            base = src[src["代號"] == a["代號"]].iloc[0].to_dict() if len(src) and a["代號"] in set(src["代號"]) else {}
+            rows.insert(0, {**base, **a.to_dict(),
+                            "_extra": f"近 5 日下跌 {a['5日漲跌']:.0%}（{a['警報']}），請說明下跌原因，並判斷是短期情緒／錯殺，還是基本面轉壞。"})
         seen = set()
         rows = [r for r in rows if not (r["代號"] in seen or seen.add(r["代號"]))]
         ai = news.analyze_many(rows)
@@ -129,7 +144,7 @@ def main():
             json.dumps(sel, ensure_ascii=False), encoding="utf-8")
 
     out = dashboard.build(cand, ind, hot_sub, techs, prices, sym_of, bt, demo=demo,
-                          sel=sel, streak=streak, surge=surge, surge_px=surge_px, ai=ai)
+                          sel=sel, streak=streak, surge=surge, surge_px=surge_px, ai=ai, alert=alert)
     print(f"\n完成，共評分 {len(cand)} 檔。前 10 名：")
     print(cand[["代號", "名稱", "股價", "階段", "細分", "總分"]].head(10).to_string(index=False))
     print(f"\n儀表板：{out}")

@@ -83,7 +83,8 @@ def analyze(row, model, extra=""):
         return None
     day = datetime.now().strftime("%Y%m%d")
     CACHE.mkdir(parents=True, exist_ok=True)
-    p = CACHE / f"{row['代號']}_{day}.json"
+    tag = "_alert" if "下跌" in extra else ""          # 急跌警報的分析（問下跌原因）和精選的分開存
+    p = CACHE / f"{row['代號']}_{day}{tag}.json"
     if p.exists():
         return json.loads(p.read_text(encoding="utf-8"))
     news = headlines(row["名稱"], row["代號"], row["市場"])

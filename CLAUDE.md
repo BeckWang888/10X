@@ -34,6 +34,8 @@ Repo：https://github.com/BeckWang888/10X（公開，GitHub Actions 自動更新
 **美股歷史財報**（`sec.py`，SEC XBRL frames API，期末 +90 天才算已知）：存 `data/backtest/us_fundamentals.csv.gz`，`sec.yml` 每月 2 日更新；SEC 要求 User-Agent 附 email，放在 secret／環境變數 `SEC_EMAIL`（noreply 信箱會被擋）。回測結論（2016–2026、1773 檔）：高自由現金流殖利率、便宜（高 B/M）、有獲利 → 勝率高、腰斬少；資產擴張快於獲利 → 差（紅旗有效）；小型股 10 倍率高但腰斬也高；4 年 10 倍股多來自虧損小型股（樂透型）。加入基本面後美股精選模型各階段都通過驗證。
 **突然暴衝**（`radar.py` 每天掃全市場：近 5 日漲 ≥15% 且量 ≥ 季均量 2.5 倍）：回測平均很差（美股 12 月中位 −39%、腰斬 71%；台股 −9%），但美股 4 年 10 倍率是平均 3.5 倍 → 只當研究名單，靠 AI 新聞＋自由現金流為正來篩。
 **AI 新聞**（`news.py`）：只分析今日精選＋暴衝股；Google 新聞 RSS 標題 → Gemini（自動挑最新 Flash，或用 `GEMINI_MODEL` 指定，開 google_search）→ 利多／利空／暴衝原因／是否新商機。需要 secret `GEMINI_API_KEY`（使用者自己設定）。
+**急跌警報**（`alerts.py`，觀察清單＋暴衝股）：🚨 急跌（5 日跌 ≥15% 且量 ≥2 倍，或單日跌 ≥8% 且量 ≥2.5 倍）、⛔ 跌破出場線（多頭中剛跌破 150 日線；回測的出場是跌破後 10 個交易日內沒站回）。回測：美股急跌時自由現金流為正→1 年中位 +16%（常反彈），為負→−32%（常續跌）。AI 會另外分析下跌原因（快取檔名加 `_alert`）。
+**公司資料連結**：台股 Yahoo 股市／Goodinfo／鉅亨網；美股 Yahoo Finance／StockAnalysis／SEC EDGAR（用 `us_cik.csv` 的 CIK）。
 **霸榜**：每天精選名單存 `data/history/picks_YYYYMMDD.json`，連續上榜天數顯示徽章（連N天／🔥5天+／👑2週+）。
 儀表板：紅漲綠跌（台股習慣）；點個股看 K 線（底色＝當時階段）、MACD、RSI；個股 K 線資料在 `site/charts/*.json`。
 **四大支柱（各 25 分）**：①底子 DNA ②商機催化劑 ③資金與技術 ④進場位置。

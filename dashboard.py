@@ -90,7 +90,7 @@ def chart_json(t, px):
 
 
 def build(cand, ind, hot_sub, techs, prices, sym_of, bt, demo=False, sel=None, streak=None,
-          surge=None, surge_px=None, ai=None):
+          surge=None, surge_px=None, ai=None, alert=None):
     now = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d %H:%M") + "（台灣時間）"
     rows = _clean(cand)
     for r in rows:
@@ -127,7 +127,20 @@ def build(cand, ind, hot_sub, techs, prices, sym_of, bt, demo=False, sel=None, s
     val = {mk: (m.get("model") or {}).get("val", {}) for mk, m in bt.get("markets", {}).items()}
     cats = [{"name": n, "stage": st, "key": k} for n, st, k in picks.CATEGORIES]
     cats.append({"name": "⚡ 突然暴衝", "stage": "surge", "key": "surge"})
-    data = {"sel": sel or {}, "streak": streak or {}, "ai": ai or {}, "surgeStats": surge_stats,
+    # 公司資料連結要用的代號：台股的 .TW／.TWO、美股的 SEC CIK
+    yf = {c: s_ for c, s_ in sym_of.items() if s_.endswith((".TW", ".TWO"))}
+    if surge is not None and len(surge) and "yf" in surge:
+        yf.update({c: s_ for c, s_ in zip(surge["代號"], surge["yf"]) if str(s_).endswith((".TW", ".TWO"))})
+    try:
+        import sec
+        cikmap = sec.load_cik()
+    except Exception:
+        cikmap = {}
+    codes = set(cand["代號"]) | set(ind["代號"] if len(ind) else []) | set(surge["代號"] if surge is not None and len(surge) else [])
+    cik = {c: int(cikmap[c]) for c in codes if c in cikmap}
+    crash = {mk: m.get("crash", {}) for mk, m in bt.get("markets", {}).items()}
+    data = {"alerts": _clean(alert) if alert is not None and len(alert) else [], "crashStats": crash,
+            "yf": yf, "cik": cik, "sel": sel or {}, "streak": streak or {}, "ai": ai or {}, "surgeStats": surge_stats,
             "surge": _clean(surge) if surge is not None and len(surge) else [],
             "trades": trades, "val": val, "cats": cats, "cand": rows, "ind": _clean(ind), "hot": hot_sub, "guide": guide, "base": base,
             "dates": dates, "time": now + ("（模擬資料，僅供預覽）" if demo else ""),
@@ -194,8 +207,17 @@ td.wrapc{white-space:normal;min-width:120px;max-width:170px}
 .sent{display:inline-block;font-size:11px;padding:0 6px;border-radius:99px;color:#fff;margin-right:4px}
 .sent.偏多{background:var(--up)}.sent.偏空{background:var(--dn)}.sent.中性{background:#71717a}
 .newop{color:var(--acc);font-weight:700;font-size:11px}
+.alerts{background:var(--card);border:1px solid var(--line);border-left:5px solid #dc2626;border-radius:12px;padding:10px 12px;margin:14px 0 4px}
+.alerts h3{margin:0 0 4px;font-size:15px}.okbar{color:var(--mute);font-size:13px;margin:14px 0 4px}
+.al{display:grid;grid-template-columns:1fr auto;gap:2px 10px;padding:7px 0;border-top:1px solid var(--line);cursor:pointer}
+.al:hover{background:var(--chip)}.al .tg{display:inline-block;font-size:11px;font-weight:700;padding:0 6px;border-radius:99px;background:#fee2e2;color:#991b1b;margin-right:4px}
+.al .hint{grid-column:1/3;font-size:12px;color:var(--mute)}
+.links{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.links a{font-size:12px;padding:3px 10px;border-radius:99px;background:var(--chip);color:var(--ink);text-decoration:none;border:1px solid var(--line)}
+.links a:hover{border-color:var(--acc);color:var(--acc)}
 .ai ul{margin:4px 0 6px 18px;padding:0}.ai li{margin:2px 0}
-.pk h3{margin:0;font-size:15px}.pk .vn{color:var(--mute);font-size:11px;margin:2px 0 6px}
+.pk h3{margin:0;font-size:15px;cursor:pointer;user-select:none;display:flex;justify-content:space-between}
+.pk h3 .tog{color:var(--mute);font-size:12px;font-weight:400}.pk .vn{color:var(--mute);font-size:11px;margin:2px 0 6px}
 .pi{display:grid;grid-template-columns:22px 1fr auto;gap:2px 8px;padding:7px 0;border-top:1px solid var(--line);cursor:pointer}
 .pi:hover{background:var(--chip)}.pi .rk{font-weight:700;color:var(--c);font-size:16px}
 .pi .sc{font-size:20px;font-weight:700;text-align:right}.pi .why{grid-column:2/4;font-size:12px;color:var(--mute)}
@@ -230,6 +252,8 @@ td.wrapc{white-space:normal;min-width:120px;max-width:170px}
 <div class="sub" id="sub"></div>
 <div class="seg" id="mk"><button data-m="" class="on">全部</button><button data-m="台股">台股</button><button data-m="美股">美股</button></div>
 
+<div id="alerts"></div>
+
 <h2>今日精選（依回測勝率＋基本面）</h2>
 <div class="small" id="pknote"></div>
 <div class="picks" id="picks" style="margin-top:8px"></div>
@@ -238,7 +262,7 @@ td.wrapc{white-space:normal;min-width:120px;max-width:170px}
 <div class="steps">
  <div class="step"><b>① 看階段</b>：這檔股票現在在漲跌循環的哪個位置（下方 7 張卡，依循環順序排）。</div>
  <div class="step"><b>② 看歷史勝率</b>：過去 10 年全市場股票在「同樣狀態」時，12 個月後上漲的比例。比全市場平均高才有優勢。</div>
- <div class="step"><b>③ 看出場線</b>：持有中的股票，收盤跌破出場線（150 日線）就是規則上的出場訊號；跌破減碼線（50 日線）先減碼。</div>
+ <div class="step"><b>③ 看出場線</b>：持有中的股票跌破出場線（150 日線）、10 個交易日內沒站回，就是規則上的出場訊號；跌破減碼線（50 日線）先減碼。</div>
  <div class="step"><b>④ 分數用來排序</b>：同一個階段裡，總分高的基本面＋動能比較好，優先研究。點任一列看 K 線、MACD、RSI。</div>
 </div>
 <div class="rule" id="rule"></div>
@@ -298,7 +322,7 @@ function rule(){
  const lab={"ALL":"全部訊號","rs=強":"＋相對強度強","rv=加速":"＋月營收加速","rs=強|rv=加速":"＋強勢＋營收加速"};
  Object.entries(T).forEach(([m,t])=>Object.entries(lab).forEach(([k,l])=>{const v=t[k];if(v)rows.push(`<tr><td class="l">${m}</td><td class="l">${l}</td><td>${v.n.toLocaleString()}</td><td><b>${pp(v.win)}</b></td><td class="up">${pc(v.avg_win)}</td><td>${pc(v.avg_loss)}</td><td><b>${pc(v.exp,1)}</b></td><td>${pc(v.bexp,1)}</td><td>${pp(v.p100,1)}</td><td>${v.weeks.toFixed(0)} 週</td></tr>`)}));
  document.getElementById("rule").innerHTML=rows.length?`<h4>進出場規則（10 年全市場回測）</h4>
-  <b>🔥 發動（進入多頭）那天買進 → 收盤跌破出場線（150 日線，轉弱）就賣出</b>。持有中跌破 50 日線可先減碼。<br>
+  <b>🔥 發動（進入多頭）那天買進 → 跌破出場線（150 日線）後 10 個交易日內沒站回（＝轉弱）就賣出</b>。持有中跌破 50 日線可先減碼。<br>
   <span class="small">勝率不到一半是正常的：這類規則靠「小賠大賺」——買錯時照出場線小賠出場，抓對時讓它一路漲。重點是<b>期望值</b>（平均每筆賺多少）為正，而且<b>一定要守出場線</b>。<br>
   <b>誠實提醒：</b>平均每筆的報酬和「同一段時間買大盤」差不多，代表光靠這個技術規則不會穩定贏大盤；它的價值在<b>控制虧損</b>、<b>避開過熱與主升後段</b>（之後一年中位數為負、腰斬機率最高）。要找到真正的十倍股，還是要靠基本面（總分）先選對股票，再用規則決定進出場時機。</span>
   <div style="overflow:auto"><table><tr><th class="l">市場</th><th class="l">進場條件</th><th>交易數</th><th>勝率</th><th>賺時平均</th><th>賠時平均</th><th>每筆期望值</th><th>同期間買大盤</th><th>單筆賺 1 倍以上</th><th>平均持有</th></tr>${rows.join("")}</table></div>`:"";
@@ -321,7 +345,32 @@ function guide(){
 /* ---------- 市場切換 ---------- */
 let mk="";
 document.querySelectorAll("#mk button").forEach(b=>b.onclick=()=>{mk=b.dataset.m;
- document.querySelectorAll("#mk button").forEach(x=>x.classList.toggle("on",x==b));picks();draw()});
+ document.querySelectorAll("#mk button").forEach(x=>x.classList.toggle("on",x==b));alertsView();picks();draw()});
+
+/* ---------- 急跌警報 ---------- */
+const AL={};D.alerts.forEach(a=>AL[a.代號]=a);
+function crashHint(a){
+ if(a.警報.includes("跌破出場線")&&!a.警報.includes("急跌"))return "依進出場規則（回測過的）：跌破出場線（150 日線）後，10 個交易日內沒站回就出場；先減碼也可以。";
+ const cs=D.crashStats[a.市場]||{};
+ if(a.市場=="美股"&&a.自由現金流殖利率!=null){const pos=a.自由現金流殖利率>0, v=cs[pos?"急跌|自由現金流為正":"急跌|自由現金流為負"];
+  if(v)return `歷史：美股急跌時自由現金流${pos?"為正":"為負"}的，1 年後中位數 ${pc(v.med12)}、腰斬 ${pp(v.half24)}——${pos?"常反彈，可能是錯殺，先查原因":"常續跌，偏向出場"}。`}
+ const v=cs["急跌"];return v?`歷史：${a.市場}急跌後 1 年中位數 ${pc(v.med12)}、6 個月內常再跌 ${pc(v.dd6)}。先看 AI 判斷的原因。`:"";}
+function alertsView(){
+ const rows=D.alerts.filter(a=>!mk||a.市場==mk);
+ const el=document.getElementById("alerts");
+ if(!rows.length){el.innerHTML=`<div class="okbar">✅ 今天${mk||""}觀察清單沒有急跌或跌破出場線的股票</div>`;return}
+ el.innerHTML=`<div class="alerts"><h3>🚨 急跌警報（${rows.length}）</h3><div class="small">觀察清單＋今日暴衝股：🚨 急跌＝5 日跌 ≥15% 或單日跌 ≥8% 且爆量；⛔ 跌破出場線＝多頭中剛跌破 150 日線。</div>
+  ${rows.map(a=>`<div class="al" data-c="${a.代號}"><div>${a.警報.split("・").map(t=>`<span class="tg">${t}</span>`).join("")}<span class="name">${a.名稱}</span><span class="code">${a.代號}・${a.市場}${a.來源=="暴衝股"?"・暴衝股":""}</span>　<b>${num(a.股價)}</b>　今日 ${pc(a["1日漲跌"],1)}・5 日 ${pc(a["5日漲跌"])}・量 ${a.量能倍數.toFixed(1)} 倍${a.嚴重?' <b class="flag">嚴重</b>':''}</div>
+   <div></div><div class="hint">${aiLine(a.代號)?aiLine(a.代號)+"<br>":""}${crashHint(a)}</div></div>`).join("")}</div>`;
+ el.querySelectorAll(".al").forEach(e=>e.onclick=()=>openDlg(e.dataset.c));
+}
+function links(code,m){
+ if(m=="台股"){const ys=D.yf[code]||code+".TW";
+  return [["Yahoo 股市・公司基本資料",`https://tw.stock.yahoo.com/quote/${ys}/profile`],["Goodinfo・財報／股利",`https://goodinfo.tw/tw/StockDetail.asp?STOCK_ID=${code}`],["鉅亨網・個股",`https://www.cnyes.com/twstock/${code}`]]}
+ const cik=D.cik[code];
+ return [["Yahoo Finance・公司簡介",`https://finance.yahoo.com/quote/${code}/profile/`],["StockAnalysis・完整財報",`https://stockanalysis.com/stocks/${code.toLowerCase()}/financials/`],
+  ["SEC EDGAR・官方申報",cik?`https://www.sec.gov/edgar/browse/?CIK=${cik}`:`https://www.sec.gov/edgar/search/#/q=${code}`]]}
+const linkHtml=(code,m)=>`<div class="links">🔗 ${links(code,m).map(([t,u])=>`<a href="${u}" target="_blank" rel="noopener">${t}</a>`).join("")}</div>`;
 
 /* ---------- 今日精選 ---------- */
 const openCards=new Set();
@@ -366,11 +415,11 @@ function picks(){
    if(flagged.length)items+=`<div class="empty">另有 ${flagged.length} 檔因紅旗未列入：${flagged.map(r=>`<a href="#${r.代號}" onclick="openDlg('${r.代號}');return false">${r.名稱}</a>`).join("、")}</div>`;
   }
   const open=openCards.has(c.name);
-  return `<div class="pk ${open?'open':''}" style="--c:${isSurge?'#e11d48':colorOf(c.stage)}" data-n="${c.name}"><h3>${c.name}</h3>
+  return `<div class="pk ${open?'open':''}" style="--c:${isSurge?'#e11d48':colorOf(c.stage)}" data-n="${c.name}"><h3 title="點一下展開／收合">${c.name}<span class="tog">${open?"收合 ▴":"展開 ▾"}</span></h3>
    <div class="body"><div class="vn">${vn}</div>${items}</div><button class="more">${open?"收合 ▴":"展開全部 ▾"}</button></div>`}).join("");
  document.getElementById("picks").innerHTML=out;
  document.querySelectorAll(".pi").forEach(e=>e.onclick=()=>openDlg(e.dataset.c));
- document.querySelectorAll(".pk .more").forEach(b=>b.onclick=()=>{const n=b.parentElement.dataset.n;openCards.has(n)?openCards.delete(n):openCards.add(n);picks()});
+ document.querySelectorAll(".pk .more, .pk h3").forEach(b=>b.onclick=()=>{const n=b.closest(".pk").dataset.n;openCards.has(n)?openCards.delete(n):openCards.add(n);picks()});
  document.getElementById("pknote").innerHTML=`<b>精選分</b>＝回測預估勝率 50%＋低腰斬風險 25%＋基本面總分 25%（勝率模型沒通過驗證的改成腰斬 40%＋總分 60%）。徽章＝連續上榜：連N天／🔥 5 天以上／👑 2 週以上。<span class="sent 偏多">偏多</span><span class="sent 中性">中性</span><span class="sent 偏空">偏空</span>＝AI 讀近兩週新聞的判斷，點個股看利多利空。`;
 }
 
@@ -389,7 +438,7 @@ function draw(){
   const wd=r.預估勝率!=null&&r.階段勝率!=null?r.預估勝率-r.階段勝率:null;
   const hd=r.預估腰斬!=null&&r.階段腰斬!=null?r.預估腰斬-r.階段腰斬:null;
   return `<tr data-c="${r.代號}">
- <td class="l"><span class="name">${r.名稱}</span><span class="code">${r.代號}</span><br><span class="small">${r.市場}・${r.子題}</span>${r.產業已發動?' <span class="hot small">●發動</span>':''}${r.紅旗?`<br><span class="flag">⚑ ${r.紅旗}</span>`:""}</td>
+ <td class="l">${AL[r.代號]?'<span title="'+AL[r.代號].警報+'">🚨</span>':''}<span class="name">${r.名稱}</span><span class="code">${r.代號}</span><br><span class="small">${r.市場}・${r.子題}</span>${r.產業已發動?' <span class="hot small">●發動</span>':''}${r.紅旗?`<br><span class="flag">⚑ ${r.紅旗}</span>`:""}</td>
  <td><b>${num(r.股價)}</b><br>${pc(r.日漲跌,1)} <span class="small ${stale?'stale':''}">${r.資料日期.slice(5)}</span></td>
  <td class="l">${tag(r.階段)}${r.細分?` <b>${r.細分}</b>`:""}<br><span class="small">${r.週期位置||""}</span></td>
  <td class="l wrapc">${r.操作}</td>
@@ -426,7 +475,8 @@ async function openDlg(code){
  const base=D.base[o.市場]||{}, bt=r&&r.bt;
  document.getElementById("dhead").innerHTML=`<div class="ph"><span style="font-size:20px;font-weight:700">${o.名稱}</span><span class="code">${o.代號}・${o.市場}${r?"・"+r.角色:ir?"・指標股":"・暴衝雷達"}</span>
   <span class="px">${num(o.股價)}</span><span>${pc(o.日漲跌,2)}</span><span class="small">資料日期 ${o.資料日期||""}</span></div>
-  <div class="small">${o.主題||""}${o.子題?"・"+o.子題:""}${sr?`⚡ 近 5 日 ${pc(sr["5日漲幅"])}、量 ${sr.量能倍數.toFixed(1)} 倍・${sr.階段} ${sr.細分||""}　${sr.週期位置||""}`:""}${r&&r.產業已發動?' <span class="hot">● 產業發動</span>':''}</div>`;
+  ${linkHtml(o.代號,o.市場)}
+  <div class="small" style="margin-top:6px">${o.主題||""}${o.子題?"・"+o.子題:""}${sr?`⚡ 近 5 日 ${pc(sr["5日漲幅"])}、量 ${sr.量能倍數.toFixed(1)} 倍・${sr.階段} ${sr.細分||""}　${sr.週期位置||""}`:""}${r&&r.產業已發動?' <span class="hot">● 產業發動</span>':''}</div>`;
  let h="";
  if(r){
   const g=D.guide.find(x=>x.stage==r.階段)||{};
@@ -466,7 +516,8 @@ async function openDlg(code){
    <span>單筆賺 1 倍以上</span><b>${pp(tr.p100,1)}</b><span>平均持有</span><b>${tr.weeks.toFixed(0)} 週</b></div>
    <div class="small" style="margin-top:6px">${r.階段==D.order[1]?"<b>這檔現在就在發動期＝規則上的進場點。</b>":[D.order[2],D.order[3]].includes(r.階段)?"這檔已經在多頭中，規則上的進場點已過；持有者守住出場線即可。":"這檔現在不在進場點，等它下次進入發動期。"}</div></div>`;
  }
- const ai=D.ai[code];
+ const ai=D.ai[code], al=AL[code];
+ if(al)h=`<div class="box" style="grid-column:1/-1;border-left:5px solid #dc2626"><h3>🚨 ${al.警報}</h3>今日 ${pc(al["1日漲跌"],1)}・5 日 ${pc(al["5日漲跌"])}・量 ${al.量能倍數.toFixed(1)} 倍・150 日線 ${num(al["150日線"])}<div class="small" style="margin-top:4px">${crashHint(al)}</div></div>`+h;
  if(ai)h=`<div class="box ai" style="grid-column:1/-1"><h3>AI 新聞分析（近兩週・${ai.model||"Gemini"}・${ai.n_news} 則新聞）</h3>
   <div><span class="sent ${ai.sentiment}">${ai.sentiment}</span>${ai.new_opportunity?'<span class="newop">★ 可能出現新商機 </span>':''}<b>${ai.summary||""}</b></div>
   ${ai.why_move?`<div style="margin-top:4px">📈 <b>近期漲勢原因：</b>${ai.why_move}</div>`:""}
@@ -540,6 +591,6 @@ function drawCharts(d,r){
 
 [...new Set(C.map(r=>r.主題))].forEach(t=>ft.add(new Option(t,t)));
 [ft,fh].forEach(e=>e.onchange=draw);document.getElementById("q").oninput=draw;
-rule();guide();picks();draw();ind();
+rule();guide();alertsView();picks();draw();ind();
 if(location.hash.length>1)openDlg(decodeURIComponent(location.hash.slice(1)));
 </script></body></html>"""

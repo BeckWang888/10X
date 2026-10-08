@@ -87,7 +87,7 @@ def scan(exclude=()):
                          "日漲跌": float(c.iloc[-1] / c.iloc[-2] - 1), "資料日期": c.index[-1].strftime("%Y-%m-%d"),
                          "5日漲幅": ret5, "量能倍數": vol5, "1年漲幅": float(c.iloc[-1] / c.iloc[0] - 1),
                          "離一年高點": float(last["from_high"]), "階段": st, "細分": sub, "週期位置": pos,
-                         "暴衝強度": ret5 * min(np.log2(vol5), 4.0), "在觀察清單": code in exclude})
+                         "暴衝強度": ret5 * min(np.log2(vol5), 4.0), "在觀察清單": code in exclude, "yf": sym})
             keep[code] = (d, s)
     df = pd.DataFrame(rows)
     if df.empty:

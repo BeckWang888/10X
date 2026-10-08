@@ -408,6 +408,27 @@ def summarize_surge(df):
     return out
 
 
+def summarize_crash(df):
+    """急跌（近 5 日跌 ≥15% 且量 ≥ 季均量 2 倍）之後的表現：是繼續跌，還是反彈？"""
+    if "ret5" not in df:
+        return {}
+    m = (df["ret5"] <= -0.15) & (df["vol5"] >= 2.0)
+    ev = df[m]
+    if len(ev) < 100:
+        return {}
+    out = {"ALL": stat(df), "急跌": stat(ev)}
+    names = np.array(stages.ORDER, dtype=object)[ev["stage"].to_numpy()]
+    for st in stages.ORDER:
+        g = ev[names == st]
+        if len(g) >= 100:
+            out["急跌|" + st] = stat(g)
+    if "fcf_yield" in ev:
+        for lab, mm in (("自由現金流為正", ev["fcf_yield"] > 0), ("自由現金流為負", ev["fcf_yield"] <= 0)):
+            if mm.sum() >= 100:
+                out["急跌|" + lab] = stat(ev[mm])
+    return out
+
+
 def summarize_trades(tr):
     tr = tr.copy()
     tr["rs"] = rs_tier(tr)
@@ -465,6 +486,12 @@ def main():
                     print(f"    {b['lo']:>8.3f}～{b['hi']:<8.3f} n={b['n']:>6}  12月勝率 {b['win12'] or 0:.0%}  贏大盤 {b['beat12'] or 0:.0%}  "
                           f"中位 {b['med12'] or 0:+.0%}  2年3倍 {b['p3x'] or 0:.1%}  4年5倍 {b['p5x48'] or 0:.1%}  "
                           f"4年10倍 {b['p10x48'] or 0:.2%}  腰斬 {b['half24'] or 0:.0%}")
+        cr = summarize_crash(df)
+        result["markets"][market]["crash"] = cr
+        print("  --- 急跌（近 5 日跌 ≥15% 且量 ≥ 季均量 2 倍）之後")
+        for k, v in cr.items():
+            print(f"  {k:<16} n={v['n']:>7}  6月中位 {v['med6'] or 0:+.0%}  12月勝率 {v['win12'] or 0:.0%}  "
+                  f"12月中位 {v['med12'] or 0:+.0%}  6月內再跌 {v['dd6'] or 0:.0%}  腰斬 {v['half24'] or 0:.0%}")
         sg = summarize_surge(df)
         result["markets"][market]["surge"] = sg
         print("  --- 突然暴衝（近 5 日漲 ≥15% 且量 ≥ 季均量 2.5 倍）之後")

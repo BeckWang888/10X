@@ -11,7 +11,9 @@
 ## 第一次設定
 1. Settings → Pages → Source 選 **GitHub Actions**
 2. （選用）Settings → Secrets and variables → Actions → New secret：`FINMIND_TOKEN`（finmindtrade.com 免費註冊取得，台股月營收抓得更快）
-3. Actions → 「更新十倍股追蹤器」→ Run workflow，跑完就有網址
+3. Secret `SEC_EMAIL`：SEC EDGAR 要求的聯絡 email（美股歷史財報，`sec.yml` 每月更新）
+4. Secret `GEMINI_API_KEY`：AI 新聞分析（今日精選與暴衝股的利多／利空）；沒設定就跳過
+5. Actions → 「更新十倍股追蹤器」→ Run workflow，跑完就有網址
 
 ## 微調
 - `watchlist.xlsx`：保留=N 不追蹤；用途 候選＝評分、指標＝產業發動訊號
@@ -26,6 +28,8 @@
 ## 檔案
 - `data/history/`：每次的分數紀錄
 - `data/backtest/stage_stats.json`：回測結果（儀表板讀這個）；`tw_revenue.csv.gz`：台股歷史月營收
-- 資料來源：Yahoo Finance（yfinance）、FinMind、公開資訊觀測站、Nasdaq Trader 股票清單，全部免費
+- `data/history/picks_*.json`：每天的今日精選名單（算連續上榜天數）
+- `data/backtest/us_fundamentals.csv.gz`：SEC 美股歷史財報
+- 資料來源：Yahoo Finance（yfinance）、FinMind、公開資訊觀測站、Nasdaq Trader 股票清單、SEC EDGAR、Google 新聞，全部免費；AI 分析用 Gemini（自己的 API key）
 
 勝率是歷史統計，不是對個股的預測，也不是買賣建議。

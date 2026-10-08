@@ -1,12 +1,13 @@
-"""美股歷史財報（SEC EDGAR XBRL frames API，免費）。
+﻿"""美股歷史財報（SEC EDGAR XBRL frames API，免費）。
 
 frames API 一次回傳「所有上市公司」某個財報項目在某一期的數字，所以幾百次請求就能拿到 2009 年至今的資料。
 「什麼時候算已知」：期末後 90 天（10-K 申報期限），避免回測偷看未來。
 整理好的資料存在 data/backtest/us_fundamentals.csv.gz（放進 repo，每日更新直接讀，不用每天連 SEC）。
 
-SEC 規定程式存取要附聯絡 email（User-Agent）。
+SEC 規定程式存取要附聯絡 email（User-Agent），從環境變數 SEC_EMAIL 讀取。
 """
 import json
+import os
 import time
 from datetime import datetime
 
@@ -16,7 +17,12 @@ import requests
 
 import config
 
-UA = {"User-Agent": "10X-tracker beckwang888@users.noreply.github.com", "Accept-Encoding": "gzip, deflate"}
+def _ua():
+    """SEC 規定附聯絡 email。email 放在環境變數 SEC_EMAIL（GitHub 上是 repo secret），不寫進公開程式碼。"""
+    email = os.environ.get("SEC_EMAIL")
+    if not email:
+        raise RuntimeError("請設定環境變數 SEC_EMAIL（SEC 要求的聯絡 email）")
+    return {"User-Agent": f"10X-tracker {email}", "Accept-Encoding": "gzip, deflate"}
 CACHE = config.CACHE_DIR / "sec"
 STORE = config.ROOT / "data" / "backtest" / "us_fundamentals.csv.gz"
 LAG_DAYS = 90
@@ -28,7 +34,8 @@ FLOW = {
             "RevenueFromContractWithCustomerIncludingAssessedTax"],
     "ocf": ["NetCashProvidedByUsedInOperatingActivities",
             "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
-    "capex": ["PaymentsToAcquirePropertyPlantAndEquipment"],
+    "capex": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets",
+              "PaymentsForCapitalImprovements"],
     "opinc": ["OperatingIncomeLoss"],
     "ni": ["NetIncomeLoss"],
 }
@@ -54,7 +61,7 @@ def _get(url):
         if wait > 0:
             time.sleep(wait)
         _last[0] = time.time()
-        r = requests.get(url, headers=UA, timeout=60)
+        r = requests.get(url, headers=_ua(), timeout=60)
         if r.status_code == 404:
             return None
         if r.status_code == 200:
@@ -153,7 +160,7 @@ def panels(long):
 FUND_FEATURES = {
     "fcf_yield": "自由現金流殖利率",
     "bm": "帳面市值比（越高越便宜）",
-    "log_mcap": "市值（log10 美元）",
+    "log_mcap": "市值",
     "roa": "資產報酬率",
     "op_margin": "營業利益率",
     "rev_g": "營收年增",

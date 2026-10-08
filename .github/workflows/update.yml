@@ -40,6 +40,7 @@ jobs:
       - name: 抓資料、評分、產生儀表板
         env:
           FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python run.py
 
       - name: 把分數紀錄存回 repo

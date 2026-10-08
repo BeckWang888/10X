@@ -25,6 +25,7 @@ import requests
 
 import config
 import picks
+import sec
 import stages
 
 OUT = config.ROOT / "data" / "backtest" / "stage_stats.json"
@@ -32,7 +33,7 @@ SAMPLE_PKL = config.CACHE_DIR / "backtest_samples.pkl"
 MOPS_DIR = config.CACHE_DIR / "mops"
 REV_STORE = config.ROOT / "data" / "backtest" / "tw_revenue.csv.gz"
 STEP = 5                 # 每 5 個交易日取樣一次（約每週）
-H6, H12, H24 = 126, 252, 504
+H6, H12, H24, H48 = 126, 252, 504, 1008
 LIQ = {"美股": (2e6, 2.0), "台股": (2e7, 10.0)}   # 20 日平均成交金額、最低股價，太冷門的不算
 RS_TOP, RS_LOW = 0.8, 0.2
 
@@ -53,7 +54,8 @@ def us_universe():
 def tw_universe():
     r = requests.get("https://api.finmindtrade.com/api/v4/data", params={"dataset": "TaiwanStockInfo"}, timeout=30)
     df = pd.DataFrame(r.json()["data"])
-    df = df[df["stock_id"].str.fullmatch(r"[1-9]\d{3}") & df["type"].isin(["twse", "tpex"])].drop_duplicates("stock_id")
+    df = df[df["stock_id"].str.fullmatch(r"[1-9]\d{3}") & df["type"].isin(["twse", "tpex"])]
+    df = df.sort_values("date").drop_duplicates("stock_id", keep="last")       # 同一檔有舊紀錄時取最新的上市別
     return [s + (".TW" if t == "twse" else ".TWO") for s, t in zip(df["stock_id"], df["type"])]
 
 
@@ -170,6 +172,11 @@ def samples(sym, px, bench_close, market, dates):
     })
     min24 = pd.Series(rev.rolling(H24, min_periods=H24).min().to_numpy()[::-1], index=c.index).shift(-1) / c
     df["half24"] = (min24 <= 0.5).where(min24.notna())          # 2 年內曾腰斬（跌掉一半）
+    df["max48"] = pd.Series(rev.rolling(H48, min_periods=H48).max().to_numpy()[::-1], index=c.index).shift(-1) / c
+    df["close"] = c
+    vol = px["Volume"].reindex(c.index).astype(float)
+    df["ret5"] = c / c.shift(5) - 1                                          # 近 5 日漲幅
+    df["vol5"] = vol.rolling(5).mean() / vol.rolling(60).mean().replace(0, np.nan)   # 近 5 日量／季均量
     df = df.join(feat)
     ok = (s["stage"] >= 0) & (dollar >= min_dollar) & (c >= min_px)
     out = df[ok & df.index.isin(dates)]
@@ -197,6 +204,27 @@ def trades(sym, s, bench, ok):
         else:
             i += 1
     return pd.DataFrame(rows)
+
+
+def add_us_fundamentals(df):
+    """接上 SEC 歷史財報（只用當時已公布的）。抓不到 SEC 時用 repo 裡存的資料。"""
+    long = sec.load()          # 由 sec.yml 每月更新（python sec.py）
+    if long is None:
+        try:
+            long = sec.build()
+        except Exception as e:
+            print(f"\n  SEC 連線失敗（{e}）")
+    if long is None:
+        print("  沒有 SEC 財報資料，跳過基本面")
+        return df
+    cik = sec.load_cik()
+    df = df.assign(cik=df["sym"].map(cik))
+    has = df["cik"].notna()
+    a, q = sec.panels(long)
+    f = sec.features(df[has].copy(), a, q)
+    out = pd.concat([f, df[~has]], ignore_index=True)
+    print(f"\n  基本面：{f['fcf_yield'].notna().sum():,} 筆樣本有自由現金流資料（{f.loc[f['fcf_yield'].notna(), 'sym'].nunique()} 檔）")
+    return out
 
 
 def build(market, syms, reuse_px=False):
@@ -234,10 +262,12 @@ def build(market, syms, reuse_px=False):
         df = df.sort_values("date")
         df = pd.merge_asof(df, rv.sort_values("avail"), left_on="date", right_on="avail", by="code",
                            direction="backward", tolerance=pd.Timedelta(days=70))
-    # 每筆交易的進場狀態（相對強度、月營收）取進場前最近一次取樣
+    if market == "美股":
+        df = add_us_fundamentals(df)
+    # 每筆交易的進場狀態（相對強度、月營收、基本面）取進場前最近一次取樣
     tr = pd.concat([t for t in tparts if len(t)], ignore_index=True)
     tr["date"] = pd.to_datetime(tr["date"]).astype("datetime64[ns]")
-    cols = ["date", "sym", "rs_pct"] + (["yoy3", "accel"] if "yoy3" in df else [])
+    cols = ["date", "sym", "rs_pct"] + (["yoy3", "accel"] if "yoy3" in df else []) +         [c for c in sec.FUND_FEATURES if c in df]
     tr = pd.merge_asof(tr.sort_values("date"), df[cols].sort_values("date"), on="date", by="sym",
                        direction="backward", tolerance=pd.Timedelta(days=10))
     df["market"] = market
@@ -260,6 +290,8 @@ def stat(g):
         "p5x": f((m24 >= 5).mean()) if len(m24) else None,
         "dd6": f(g["dd6"].median()),                            # 之後 6 個月內最大跌幅（中位數）
         "half24": f(g["half24"].dropna().mean()) if g["half24"].notna().any() else None,  # 2 年內曾腰斬
+        "p5x48": f((g["max48"].dropna() >= 5).mean()) if "max48" in g and g["max48"].notna().any() else None,   # 4 年內曾漲到 5 倍
+        "p10x48": f((g["max48"].dropna() >= 10).mean()) if "max48" in g and g["max48"].notna().any() else None, # 4 年內曾漲到 10 倍
     }
 
 
@@ -326,6 +358,56 @@ def summarize(df):
     return res
 
 
+def summarize_fund(df):
+    """美股基本面：每個指標分 5 組，看各組後來的表現（含 4 年內漲 10 倍的比例）"""
+    out = {}
+    for fcol, label in sec.FUND_FEATURES.items():
+        if fcol not in df or df[fcol].notna().sum() < 5000:
+            continue
+        sub = df[df[fcol].notna()]
+        bins = pd.qcut(sub[fcol], 5, duplicates="drop")
+        rows = []
+        for b, g in sub.groupby(bins, observed=True):
+            rows.append({"lo": float(b.left), "hi": float(b.right), **stat(g)})
+        out[fcol] = {"label": label, "bins": rows}
+    return out
+
+
+SURGE = {"暴衝": (0.15, 2.5), "強烈暴衝": (0.30, 3.0)}   # 近 5 日漲幅 ≥、近 5 日量是季均量的幾倍 ≥
+
+
+def is_surge(ret5, vol5, level="暴衝"):
+    r, v = SURGE[level]
+    return (ret5 >= r) & (vol5 >= v)
+
+
+def summarize_surge(df):
+    """突然暴衝（短期急漲＋爆量）之後的表現；也分階段、分基本面看"""
+    if "ret5" not in df:
+        return {}
+    out = {"ALL": stat(df)}
+    for lv in SURGE:
+        m = is_surge(df["ret5"], df["vol5"], lv)
+        if m.sum() >= 100:
+            out[lv] = stat(df[m])
+    m = is_surge(df["ret5"], df["vol5"])
+    ev = df[m]
+    names = np.array(stages.ORDER, dtype=object)[ev["stage"].to_numpy()]
+    for st in stages.ORDER:
+        g = ev[names == st]
+        if len(g) >= 100:
+            out["暴衝|" + st] = stat(g)
+    if "fcf_yield" in ev:
+        for lab, mm in (("自由現金流為正", ev["fcf_yield"] > 0), ("自由現金流為負", ev["fcf_yield"] <= 0)):
+            if mm.sum() >= 100:
+                out["暴衝|" + lab] = stat(ev[mm])
+    if "accel" in ev:
+        for lab, mm in (("月營收加速", (ev["yoy3"] > 0.2) & (ev["accel"] > 0)), ("月營收未加速", ~((ev["yoy3"] > 0.2) & (ev["accel"] > 0)))):
+            if mm.sum() >= 100:
+                out["暴衝|" + lab] = stat(ev[mm])
+    return out
+
+
 def summarize_trades(tr):
     tr = tr.copy()
     tr["rs"] = rs_tier(tr)
@@ -372,6 +454,23 @@ def main():
                                      "trades": summarize_trades(fr["trades"]),
                                      "past6_q": [float(x) for x in last.quantile(np.linspace(0, 1, 21))],
                                      "model": picks.train(df, market)}
+        if market == "美股" and "fcf_yield" in df:
+            fund = summarize_fund(df)
+            result["markets"][market]["fund"] = fund
+            base = stat(df[df["fcf_yield"].notna()])
+            print(f"  --- 美股基本面分組（有財報的樣本：12月勝率 {base['win12']:.0%}、2年3倍 {base['p3x']:.1%}、4年10倍 {base['p10x48'] or 0:.2%}）")
+            for fcol, v in fund.items():
+                print(f"  {v['label']}")
+                for b in v["bins"]:
+                    print(f"    {b['lo']:>8.3f}～{b['hi']:<8.3f} n={b['n']:>6}  12月勝率 {b['win12'] or 0:.0%}  贏大盤 {b['beat12'] or 0:.0%}  "
+                          f"中位 {b['med12'] or 0:+.0%}  2年3倍 {b['p3x'] or 0:.1%}  4年5倍 {b['p5x48'] or 0:.1%}  "
+                          f"4年10倍 {b['p10x48'] or 0:.2%}  腰斬 {b['half24'] or 0:.0%}")
+        sg = summarize_surge(df)
+        result["markets"][market]["surge"] = sg
+        print("  --- 突然暴衝（近 5 日漲 ≥15% 且量 ≥ 季均量 2.5 倍）之後")
+        for k, v in sg.items():
+            print(f"  {k:<16} n={v['n']:>7}  6月中位 {v['med6'] or 0:+.0%}  12月勝率 {v['win12'] or 0:.0%}  贏大盤 {v['beat12'] or 0:.0%}  "
+                  f"12月中位 {v['med12'] or 0:+.0%}  2年3倍 {v['p3x'] or 0:.1%}  4年10倍 {v['p10x48'] or 0:.2%}  腰斬 {v['half24'] or 0:.0%}")
         mv = result["markets"][market]["model"]
         print(f"  --- 精選模型驗證（2021 前建模、2022 後檢驗；w={mv['w']}）")
         for st, v in mv["val"].items():

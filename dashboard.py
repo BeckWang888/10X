@@ -89,7 +89,8 @@ def chart_json(t, px):
     }
 
 
-def build(cand, ind, hot_sub, techs, prices, sym_of, bt, demo=False):
+def build(cand, ind, hot_sub, techs, prices, sym_of, bt, demo=False, sel=None, streak=None,
+          surge=None, surge_px=None, ai=None):
     now = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d %H:%M") + "（台灣時間）"
     rows = _clean(cand)
     for r in rows:
@@ -117,10 +118,18 @@ def build(cand, ind, hot_sub, techs, prices, sym_of, bt, demo=False):
             (chart_dir / f"{code}.json").write_text(json.dumps(chart_json(t, px), separators=(",", ":")),
                                                     encoding="utf-8")
 
+    for code, (px, s) in (surge_px or {}).items():           # 暴衝雷達的股票（可能不在觀察清單）
+        if code not in techs:
+            (chart_dir / f"{code}.json").write_text(json.dumps(chart_json({"series": s}, px), separators=(",", ":")),
+                                                    encoding="utf-8")
+    surge_stats = {mk: m.get("surge", {}) for mk, m in bt.get("markets", {}).items()}
     trades = {mk: m.get("trades") for mk, m in bt.get("markets", {}).items() if m.get("trades")}
     val = {mk: (m.get("model") or {}).get("val", {}) for mk, m in bt.get("markets", {}).items()}
     cats = [{"name": n, "stage": st, "key": k} for n, st, k in picks.CATEGORIES]
-    data = {"trades": trades, "val": val, "cats": cats, "cand": rows, "ind": _clean(ind), "hot": hot_sub, "guide": guide, "base": base,
+    cats.append({"name": "⚡ 突然暴衝", "stage": "surge", "key": "surge"})
+    data = {"sel": sel or {}, "streak": streak or {}, "ai": ai or {}, "surgeStats": surge_stats,
+            "surge": _clean(surge) if surge is not None and len(surge) else [],
+            "trades": trades, "val": val, "cats": cats, "cand": rows, "ind": _clean(ind), "hot": hot_sub, "guide": guide, "base": base,
             "dates": dates, "time": now + ("（模擬資料，僅供預覽）" if demo else ""),
             "btDate": bt.get("generated"), "order": stages.ORDER,
             "colors": [COLOR[s] for s in stages.ORDER]}
@@ -173,8 +182,19 @@ td.wrapc{white-space:normal;min-width:120px;max-width:170px}
 .seg{display:inline-flex;background:var(--chip);border-radius:10px;padding:3px;gap:3px;margin:14px 0 4px}
 .seg button{border:0;background:none;color:var(--ink);font:inherit;font-weight:600;padding:6px 18px;border-radius:8px;cursor:pointer}
 .seg button.on{background:var(--acc);color:#fff}
-.picks{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px}
-.pk{background:var(--card);border:1px solid var(--line);border-top:4px solid var(--c);border-radius:12px;padding:10px 12px}
+.picks{display:grid;grid-template-columns:repeat(auto-fit,minmax(235px,1fr));gap:10px;align-items:start}
+@media (min-width:1240px){.picks{grid-template-columns:repeat(5,1fr)}}
+.pk{background:var(--card);border:1px solid var(--line);border-top:4px solid var(--c);border-radius:12px;padding:10px 12px;position:relative}
+.pk .body{height:330px;overflow:hidden;position:relative}
+.pk.open .body{height:auto}
+.pk:not(.open) .body::after{content:"";position:absolute;left:0;right:0;bottom:0;height:56px;background:linear-gradient(transparent,var(--card))}
+.pk .more{display:block;width:100%;margin-top:6px;border:0;border-radius:8px;background:var(--chip);color:var(--ink);font:inherit;font-size:12px;padding:5px;cursor:pointer}
+.badge{display:inline-block;font-size:11px;font-weight:700;padding:0 6px;border-radius:99px;margin-left:4px;vertical-align:1px;background:var(--chip);color:var(--mute)}
+.badge.b5{background:#fed7aa;color:#9a3412}.badge.b10{background:linear-gradient(90deg,#fde68a,#f59e0b);color:#78350f}
+.sent{display:inline-block;font-size:11px;padding:0 6px;border-radius:99px;color:#fff;margin-right:4px}
+.sent.偏多{background:var(--up)}.sent.偏空{background:var(--dn)}.sent.中性{background:#71717a}
+.newop{color:var(--acc);font-weight:700;font-size:11px}
+.ai ul{margin:4px 0 6px 18px;padding:0}.ai li{margin:2px 0}
 .pk h3{margin:0;font-size:15px}.pk .vn{color:var(--mute);font-size:11px;margin:2px 0 6px}
 .pi{display:grid;grid-template-columns:22px 1fr auto;gap:2px 8px;padding:7px 0;border-top:1px solid var(--line);cursor:pointer}
 .pi:hover{background:var(--chip)}.pi .rk{font-weight:700;color:var(--c);font-size:16px}
@@ -304,28 +324,54 @@ document.querySelectorAll("#mk button").forEach(b=>b.onclick=()=>{mk=b.dataset.m
  document.querySelectorAll("#mk button").forEach(x=>x.classList.toggle("on",x==b));picks();draw()});
 
 /* ---------- 今日精選 ---------- */
+const openCards=new Set();
+function badge(code,cat){const n=((D.streak[code]||{})[cat])||0;if(n<2)return "";
+ const t=n>=10?`👑 ${Math.floor(n/5)}週`:n>=5?`🔥 ${n}天`:`連${n}天`;
+ return `<span class="badge ${n>=10?'b10':n>=5?'b5':''}" title="連續 ${n} 個交易日上榜">${t}</span>`}
+function aiLine(code){const a=D.ai[code];if(!a)return "";
+ return `<span class="sent ${a.sentiment}">${a.sentiment}</span>${a.new_opportunity?'<span class="newop">★ 新商機 </span>':''}${a.summary||""}`}
+function pickItem(r,i,c){
+ const isHot=c.key=="w6", wk=isHot?"預估6月勝率":"預估勝率", sk=isHot?"階段6月勝率":"階段勝率", okKey=isHot?"6月模型有效":"勝率模型有效";
+ const better=r[wk]-r[sk];
+ return `<div class="pi" data-c="${r.代號}"><span class="rk">${i+1}</span>
+  <div><span class="name">${r.名稱}</span>${badge(r.代號,c.name)}<span class="code">${r.代號}・${r.市場}</span>　<b>${num(r.股價)}</b> ${pc(r.日漲跌,1)}<br>
+  <span class="small">${r.細分?r.細分+"・":""}${r[okKey]?`${isHot?"6 個月":"12 個月"}勝率 <b class="${better>0?'up':''}">${pp(r[wk])}</b>（階段 ${pp(r[sk])}）`:`勝率 階段平均 ${pp(r[sk])}`}・腰斬 <b>${pp(r.預估腰斬)}</b>・總分 ${r.總分}</span></div>
+  <div class="sc">${r.精選分}<div class="small" style="font-weight:400">精選分</div></div>
+  <div class="why">${aiLine(r.代號)?aiLine(r.代號)+"<br>":""}${r.加分理由?"✔ "+r.加分理由:""}${r.扣分理由?"<br>✘ "+r.扣分理由:""}<br>出場線 ${r.出場線?num(r.出場線)+"（距離 "+pp(r.股價/r.出場線-1)+"）":"–"}</div></div>`}
+function surgeItem(r,i){
+ const st=((D.surgeStats[r.市場]||{})["暴衝|"+r.階段])||{};
+ return `<div class="pi" data-c="${r.代號}"><span class="rk">${i+1}</span>
+  <div><span class="name">${r.名稱}</span>${badge(r.代號,"⚡ 突然暴衝")}<span class="code">${r.代號}・${r.市場}${r.在觀察清單?"・觀察清單":""}</span>　<b>${num(r.股價)}</b> ${pc(r.日漲跌,1)}<br>
+  <span class="small">5 日 <b class="up">${pc(r["5日漲幅"])}</b>・量 <b>${r.量能倍數.toFixed(1)} 倍</b>・${r.階段}${r.細分?" "+r.細分:""}${r.市場=="美股"?(r.自由現金流殖利率!=null?`・FCF 殖利率 <b class="${r.自由現金流殖利率>0?'up':'dn'}">${pp(r.自由現金流殖利率,1)}</b>`:"・無財報"):""}</span></div>
+  <div class="sc" style="font-size:16px">${pc(r["5日漲幅"])}<div class="small" style="font-weight:400">5 日</div></div>
+  <div class="why">${aiLine(r.代號)||"（尚無 AI 分析）"}${st.n?`<br>歷史上「${r.階段}時暴衝」：12 月勝率 ${pp(st.win12)}、腰斬 ${pp(st.half24)}、4 年 10 倍 ${pp(st.p10x48,1)}`:""}</div></div>`}
 function picks(){
  const out=D.cats.map(c=>{
-  const isHot=c.key=="w6", wk=isHot?"預估6月勝率":"預估勝率", sk=isHot?"階段6月勝率":"階段勝率";
-  const okKey=isHot?"6月模型有效":"勝率模型有效";
-  const list=C.filter(r=>r.精選分類==c.name&&r.精選分!=null&&!r.紅旗&&(!mk||r.市場==mk)).sort((a,b)=>b.精選分-a.精選分).slice(0,5);
-  const mks=mk?[mk]:Object.keys(D.val);
-  const vn=mks.map(m=>{const v=(D.val[m]||{})[c.stage];const t=v&&v[c.key];
-   return t?`${m}：預估最高 20% 實際${isHot?"6":"12"}月勝率 <b>${pp(t.top)}</b>、最低 20% ${pp(t.bottom)}${t.top-t.bottom<0.05?' <span class="flag">→ 未通過，改用腰斬風險＋總分排序</span>':' ✅'}`:""}).filter(x=>x).join("；");
-  const items=list.length?list.map((r,i)=>{const better=r[wk]-r[sk];
-   return `<div class="pi" data-c="${r.代號}"><span class="rk">${i+1}</span>
-    <div><span class="name">${r.名稱}</span><span class="code">${r.代號}・${r.市場}</span>　<b>${num(r.股價)}</b> ${pc(r.日漲跌,1)}<br>
-    <span class="small">${r.細分?r.細分+"・":""}${r[okKey]?`${isHot?"6 個月":"12 個月"}勝率 <b class="${better>0?'up':''}">${pp(r[wk])}</b>（階段平均 ${pp(r[sk])}）`:`勝率：階段平均 ${pp(r[sk])}（模型未通過驗證）`}・腰斬 <b>${pp(r.預估腰斬)}</b>（平均 ${pp(r.階段腰斬)}）・總分 ${r.總分}</span></div>
-    <div class="sc">${r.精選分}<div class="small" style="font-weight:400">精選分</div></div>
-    <div class="why">${r.加分理由?"✔ "+r.加分理由:""}${r.扣分理由?"<br>✘ "+r.扣分理由:""}<br>出場線 ${r.出場線?num(r.出場線)+"（距離 "+pp(r.股價/r.出場線-1)+"）":"–"}</div></div>`}).join("")
-   :`<div class="empty">目前沒有${mk||""}候選股在這個階段</div>`;
-  const flagged=C.filter(r=>r.精選分類==c.name&&r.紅旗&&(!mk||r.市場==mk));
-  const fnote=flagged.length?`<div class="empty">另有 ${flagged.length} 檔因紅旗未列入：${flagged.map(r=>`<a href="#${r.代號}" onclick="openDlg('${r.代號}');return false">${r.名稱}</a>`).join("、")}</div>`:"";
-  return `<div class="pk" style="--c:${colorOf(c.stage)}"><h3>${c.name}</h3>
-   <div class="vn">${isHot?"以「6 個月後仍上漲」的機率排序。":""}模型驗證（2021 前建模、2022 後檢驗）：${vn||"樣本不足"}</div>${items}${fnote}</div>`}).join("");
+  const isSurge=c.key=="surge", isHot=c.key=="w6";
+  const mks=mk?[mk]:["台股","美股"];
+  const codes=mks.flatMap(m=>((D.sel[c.name]||{})[m]||[]));
+  let items, vn="";
+  if(isSurge){
+   const rows=codes.map(x=>D.surge.find(r=>r.代號==x)).filter(x=>x).sort((a,b)=>b.暴衝強度-a.暴衝強度);
+   items=rows.length?rows.map((r,i)=>surgeItem(r,i)).join(""):`<div class="empty">今天全市場沒有${mk||""}股票符合暴衝條件</div>`;
+   const ss=mks.map(m=>{const v=(D.surgeStats[m]||{})["暴衝"],b=(D.surgeStats[m]||{}).ALL;return v&&b?`${m}暴衝後 12 月中位 ${pc(v.med12)}、腰斬 ${pp(v.half24)}（平均 ${pp(b.half24)}）、4 年 10 倍 ${pp(v.p10x48,1)}（平均 ${pp(b.p10x48,1)}）`:""}).filter(x=>x).join("；");
+   vn=`全市場掃描：近 5 日漲 ≥15% 且量 ≥ 季均量 2.5 倍。<b>這是研究名單不是買進名單</b>——回測：${ss}。大商機藏在裡面但多數會回吐，請看 AI 的原因分析，並優先挑自由現金流為正的。`;
+  }else{
+   const rows=codes.map(x=>C.find(r=>r.代號==x)).filter(x=>x).sort((a,b)=>b.精選分-a.精選分);
+   items=rows.length?rows.map((r,i)=>pickItem(r,i,c)).join(""):`<div class="empty">目前沒有${mk||""}候選股在這個階段</div>`;
+   vn=mks.map(m=>{const v=(D.val[m]||{})[c.stage];const t=v&&v[c.key];
+    return t?`${m} ${pp(t.top)} vs ${pp(t.bottom)}${t.top-t.bottom<0.05?' <span class="flag">未通過→改用腰斬＋總分</span>':' ✅'}`:""}).filter(x=>x).join("；");
+   vn=`${isHot?"以「6 個月後仍上漲」排序。":""}驗證（2022 後，預估最高 vs 最低 20% 的實際勝率）：${vn||"樣本不足"}`;
+   const flagged=C.filter(r=>r.精選分類==c.name&&r.紅旗&&(!mk||r.市場==mk));
+   if(flagged.length)items+=`<div class="empty">另有 ${flagged.length} 檔因紅旗未列入：${flagged.map(r=>`<a href="#${r.代號}" onclick="openDlg('${r.代號}');return false">${r.名稱}</a>`).join("、")}</div>`;
+  }
+  const open=openCards.has(c.name);
+  return `<div class="pk ${open?'open':''}" style="--c:${isSurge?'#e11d48':colorOf(c.stage)}" data-n="${c.name}"><h3>${c.name}</h3>
+   <div class="body"><div class="vn">${vn}</div>${items}</div><button class="more">${open?"收合 ▴":"展開全部 ▾"}</button></div>`}).join("");
  document.getElementById("picks").innerHTML=out;
  document.querySelectorAll(".pi").forEach(e=>e.onclick=()=>openDlg(e.dataset.c));
- document.getElementById("pknote").innerHTML=`每個階段挑出條件最好的前 5 名。<b>精選分</b>＝回測預估勝率 50%＋低腰斬風險 25%＋基本面總分 25%（和同市場其他候選股比）；勝率模型沒通過驗證的階段，改成低腰斬風險 40%＋總分 60%。✔ 加分、✘ 扣分＝和同階段歷史平均比，這個條件讓勝率高／低了幾個百分點。有紅旗的不列入。`;
+ document.querySelectorAll(".pk .more").forEach(b=>b.onclick=()=>{const n=b.parentElement.dataset.n;openCards.has(n)?openCards.delete(n):openCards.add(n);picks()});
+ document.getElementById("pknote").innerHTML=`<b>精選分</b>＝回測預估勝率 50%＋低腰斬風險 25%＋基本面總分 25%（勝率模型沒通過驗證的改成腰斬 40%＋總分 60%）。徽章＝連續上榜：連N天／🔥 5 天以上／👑 2 週以上。<span class="sent 偏多">偏多</span><span class="sent 中性">中性</span><span class="sent 偏空">偏空</span>＝AI 讀近兩週新聞的判斷，點個股看利多利空。`;
 }
 
 const cols=[["名稱","l"],["股價"],["階段","l"],["操作","l"],["出場線"],["預估勝率"],["腰斬風險"],["強度／營收"],["總分"],["精選分"]];
@@ -373,14 +419,14 @@ document.querySelectorAll("#rng button").forEach(b=>b.onclick=()=>{curN=+b.datas
 function setRange(){if(!cdata)return;const n=cdata.t.length;charts.forEach(c=>c.timeScale().setVisibleLogicalRange({from:Math.max(0,n-curN),to:n+3}))}
 
 async function openDlg(code){
- const r=C.find(x=>x.代號==code), ir=I.find(x=>x.代號==code), o=r||ir;
+ const r=C.find(x=>x.代號==code), ir=I.find(x=>x.代號==code), sr=D.surge.find(x=>x.代號==code), o=r||ir||sr;
  if(!o)return;
  history.replaceState(null,"","#"+code);
  document.getElementById("dlg").classList.add("open");
  const base=D.base[o.市場]||{}, bt=r&&r.bt;
- document.getElementById("dhead").innerHTML=`<div class="ph"><span style="font-size:20px;font-weight:700">${o.名稱}</span><span class="code">${o.代號}・${o.市場}${r?"・"+r.角色:"・指標股"}</span>
-  <span class="px">${num(o.股價)}</span><span>${pc(o.日漲跌,2)}</span><span class="small">資料日期 ${r?r.資料日期:""}</span></div>
-  <div class="small">${o.主題}・${o.子題}${r&&r.產業已發動?' <span class="hot">● 產業發動</span>':''}</div>`;
+ document.getElementById("dhead").innerHTML=`<div class="ph"><span style="font-size:20px;font-weight:700">${o.名稱}</span><span class="code">${o.代號}・${o.市場}${r?"・"+r.角色:ir?"・指標股":"・暴衝雷達"}</span>
+  <span class="px">${num(o.股價)}</span><span>${pc(o.日漲跌,2)}</span><span class="small">資料日期 ${o.資料日期||""}</span></div>
+  <div class="small">${o.主題||""}${o.子題?"・"+o.子題:""}${sr?`⚡ 近 5 日 ${pc(sr["5日漲幅"])}、量 ${sr.量能倍數.toFixed(1)} 倍・${sr.階段} ${sr.細分||""}　${sr.週期位置||""}`:""}${r&&r.產業已發動?' <span class="hot">● 產業發動</span>':''}</div>`;
  let h="";
  if(r){
   const g=D.guide.find(x=>x.stage==r.階段)||{};
@@ -420,6 +466,14 @@ async function openDlg(code){
    <span>單筆賺 1 倍以上</span><b>${pp(tr.p100,1)}</b><span>平均持有</span><b>${tr.weeks.toFixed(0)} 週</b></div>
    <div class="small" style="margin-top:6px">${r.階段==D.order[1]?"<b>這檔現在就在發動期＝規則上的進場點。</b>":[D.order[2],D.order[3]].includes(r.階段)?"這檔已經在多頭中，規則上的進場點已過；持有者守住出場線即可。":"這檔現在不在進場點，等它下次進入發動期。"}</div></div>`;
  }
+ const ai=D.ai[code];
+ if(ai)h=`<div class="box ai" style="grid-column:1/-1"><h3>AI 新聞分析（近兩週・${ai.model||"Gemini"}・${ai.n_news} 則新聞）</h3>
+  <div><span class="sent ${ai.sentiment}">${ai.sentiment}</span>${ai.new_opportunity?'<span class="newop">★ 可能出現新商機 </span>':''}<b>${ai.summary||""}</b></div>
+  ${ai.why_move?`<div style="margin-top:4px">📈 <b>近期漲勢原因：</b>${ai.why_move}</div>`:""}
+  <div class="boxes" style="margin:6px 0 0"><div><b class="up">利多</b><ul>${(ai.bull||[]).map(x=>`<li>${x}</li>`).join("")}</ul></div>
+  <div><b class="dn">利空／風險</b><ul>${(ai.bear||[]).map(x=>`<li>${x}</li>`).join("")}</ul></div></div>
+  <div class="small">${(ai.news||[]).map(n=>`<a href="${n.link}" target="_blank" rel="noopener" style="color:var(--mute)">${n.date}・${n.source}：${n.title}</a>`).join("<br>")}</div>
+  <div class="small" style="margin-top:4px">AI 整理僅供參考，可能有錯，重要消息請點新聞原文確認。</div></div>`+h;
  document.getElementById("dboxes").innerHTML=h;
  document.getElementById("dboxes2").innerHTML=r?`<div class="box"><h3>四大支柱分數</h3><div class="kv">
    <span>總分</span><b>${r.總分}</b><span>① 底子 DNA</span><b>${r["①底子"]} / 25</b><span>② 商機催化劑</span><b>${r["②催化劑"]} / 25</b>

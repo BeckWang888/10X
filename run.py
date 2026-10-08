@@ -85,14 +85,51 @@ def main():
     bt = load_backtest()
     rs_cut = {m: v.get("rs_cut") for m, v in bt.get("markets", {}).items()}
     cand, ind, hot_sub, techs = scoring.score_all(wl, prices, funds, mrevs, sym_of, rs_cut)
-    cand = picks.apply(cand, techs, mrevs, bt)
+    us_fund = {} if demo else picks.us_fundamentals(cand)
+    cand = picks.apply(cand, techs, mrevs, bt, us_fund)
+    sel = picks.select(cand)
+
+    # 暴衝雷達：全市場掃描（--no-radar 可跳過，本機測試比較快）
+    surge, surge_px = pd.DataFrame(), {}
+    if not demo and "--no-radar" not in sys.argv:
+        import radar
+        print("暴衝雷達：掃描全市場…")
+        try:
+            surge, surge_px = radar.scan(exclude=set(wl["代號"]))
+            print(f"  找到 {len(surge)} 檔暴衝股")
+        except Exception as e:
+            print(f"  雷達失敗：{e}")
+    sel["⚡ 突然暴衝"] = {mk: surge[surge["市場"] == mk]["代號"].tolist()[:8] if len(surge) else [] for mk in ("台股", "美股")}
+
+    # 霸榜：和過去每天的精選比，連續上榜幾天
+    config.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    streak = picks.streaks(config.HISTORY_DIR, sel) if not demo else {}
+
+    # AI 新聞分析：只分析今日精選（需要 GEMINI_API_KEY）
+    ai = {}
+    if not demo:
+        import news
+        rows = []
+        for cat, by_mk in sel.items():
+            for mk, codes in by_mk.items():
+                src = surge if cat == "⚡ 突然暴衝" else cand
+                for c in codes:
+                    r = src[src["代號"] == c].iloc[0].to_dict()
+                    if cat == "⚡ 突然暴衝":
+                        r["_extra"] = f"近 5 日成交量是季均量的 {r['量能倍數']:.1f} 倍，請特別說明暴衝原因與是否為新商機。"
+                    rows.append(r)
+        seen = set()
+        rows = [r for r in rows if not (r["代號"] in seen or seen.add(r["代號"]))]
+        ai = news.analyze_many(rows)
 
     # 存歷史紀錄（之後回測校準機率要用）
     if not demo:
-        config.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
         cand.to_csv(config.HISTORY_DIR / f"scores_{datetime.now():%Y%m%d}.csv", index=False, encoding="utf-8-sig")
+        (config.HISTORY_DIR / f"picks_{datetime.now():%Y%m%d}.json").write_text(
+            json.dumps(sel, ensure_ascii=False), encoding="utf-8")
 
-    out = dashboard.build(cand, ind, hot_sub, techs, prices, sym_of, bt, demo=demo)
+    out = dashboard.build(cand, ind, hot_sub, techs, prices, sym_of, bt, demo=demo,
+                          sel=sel, streak=streak, surge=surge, surge_px=surge_px, ai=ai)
     print(f"\n完成，共評分 {len(cand)} 檔。前 10 名：")
     print(cand[["代號", "名稱", "股價", "階段", "細分", "總分"]].head(10).to_string(index=False))
     print(f"\n儀表板：{out}")

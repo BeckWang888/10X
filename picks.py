@@ -9,6 +9,7 @@
 import numpy as np
 import pandas as pd
 
+import sec
 import stages
 
 BASE_FEATS = list(stages.FEATURES) + ["rs_pct"]
@@ -87,7 +88,7 @@ def _logloss(p, y):
 
 
 def train(df, market):
-    feats = BASE_FEATS + (TW_FEATS if market == "台股" else [])
+    feats = BASE_FEATS + (TW_FEATS if market == "台股" else [f for f in sec.FUND_FEATURES if f in df])
     names = np.array(stages.ORDER, dtype=object)[df["stage"].to_numpy()]
     out = {"w": None, "stages": {}, "val": {}}
     # 1) 用 2021 年以前建模、2022 年以後驗證，順便選縮小係數 w
@@ -132,7 +133,7 @@ def train(df, market):
 
 
 # ---------- 即時：替觀察清單算預估值與精選 ----------
-LABELS = {**stages.FEATURES, "rs_pct": "相對強度（全市場）", "yoy3": "月營收年增（近3月）", "accel": "月營收加速"}
+LABELS = {**stages.FEATURES, **sec.FUND_FEATURES, "rs_pct": "相對強度（全市場）", "yoy3": "月營收年增（近3月）", "accel": "月營收加速"}
 
 
 def _fmt(f, v):
@@ -144,11 +145,33 @@ def _fmt(f, v):
         return f"{v:.0f}"
     if f == "vol_ratio":
         return f"{v:.1f} 倍"
+    if f == "bm":
+        return f"{v:.2f}"
+    if f == "log_mcap":
+        return f"{10 ** v / 1e8:,.0f} 億美元"
     return f"{v:+.0%}"
 
 
-def live_features(t, mrev, past6_q):
+def us_fundamentals(cand):
+    """美股候選股的即時基本面特徵（SEC 財報＋今天股價），和回測用同一套算法"""
+    long = sec.load()
+    us = cand[cand["市場"] == "美股"]
+    if long is None or us.empty:
+        return {}
+    cik = sec.load_cik()
+    df = pd.DataFrame({"code": us["代號"], "cik": us["代號"].map(cik), "close": us["股價"],
+                       "date": pd.Timestamp.now().normalize()}).dropna(subset=["cik"])
+    if df.empty:
+        return {}
+    a, q = sec.panels(long)
+    f = sec.features(df, a, q)
+    return {r["code"]: {k: (None if pd.isna(r[k]) else float(r[k])) for k in sec.FUND_FEATURES}
+            for _, r in f.iterrows()}
+
+
+def live_features(t, mrev, past6_q, fund=None):
     x = {k: (None if pd.isna(v) else float(v)) for k, v in t["feat"].items()}
+    x.update({k: v for k, v in (fund or {}).items() if v is not None})
     p6 = x.get("past6")
     if p6 is not None and past6_q:
         x["rs_pct"] = float(np.interp(p6, past6_q, np.linspace(0, 1, len(past6_q))))
@@ -179,7 +202,7 @@ CATEGORIES = [  # （分類名稱, 階段, 排序用的勝率）
 ]
 
 
-def apply(cand, techs, mrevs, bt):
+def apply(cand, techs, mrevs, bt, us_fund=None):
     """在 cand 加上：預估勝率（12/6 個月）、預估腰斬、階段平均、理由；並算精選分。"""
     cols = {k: [] for k in ("預估勝率", "預估6月勝率", "預估腰斬", "階段勝率", "階段6月勝率", "階段腰斬", "加分理由", "扣分理由",
                             "勝率模型有效", "6月模型有效")}
@@ -191,7 +214,7 @@ def apply(cand, techs, mrevs, bt):
                 cols[k].append(None)
             continue
         ok12, ok6 = valid(bt, r["市場"], r["階段"], "w12"), valid(bt, r["市場"], r["階段"], "w6")
-        x = live_features(techs[r["代號"]], mrevs.get(r["代號"], {}), m.get("past6_q"))
+        x = live_features(techs[r["代號"]], mrevs.get(r["代號"], {}), m.get("past6_q"), (us_fund or {}).get(r["代號"]))
         est, contrib = predict(mdl, x, m["model"]["w"])
         contrib = [(f, d) for f, d in contrib if abs(d) >= 0.004]
         pos = sorted([c for c in contrib if c[1] > 0], key=lambda c: -c[1])[:3]
@@ -227,3 +250,37 @@ def apply(cand, techs, mrevs, bt):
             cand.loc[idx, "精選分"] = sc[idx].round(0)
             cand.loc[idx, "精選分類"] = name
     return cand
+
+
+def select(cand, n=5):
+    """每個分類 × 市場的前 n 名（有紅旗的不列入）→ {分類: {市場: [代號...]}}"""
+    out = {}
+    for name, _, _ in CATEGORIES:
+        out[name] = {}
+        for mk in ("台股", "美股"):
+            g = cand[(cand["精選分類"] == name) & (cand["市場"] == mk) & (cand["紅旗"].fillna("") == "")
+                     & cand["精選分"].notna()].sort_values("精選分", ascending=False)
+            out[name][mk] = g["代號"].head(n).tolist()
+    return out
+
+
+def streaks(history_dir, today_sel):
+    """連續上榜天數：從最近一天往回數，每個分類裡連續出現幾次（每次執行＝一個交易日）。
+    回傳 {代號: {分類: 天數}}"""
+    import json
+    from datetime import datetime
+    today = f"picks_{datetime.now():%Y%m%d}.json"
+    files = sorted(p for p in history_dir.glob("picks_*.json") if p.name != today)   # 今天另外算 1 天
+    days = [json.loads(p.read_text(encoding="utf-8")) for p in files]
+    out = {}
+    for cat, by_mk in today_sel.items():
+        for codes in by_mk.values():
+            for c in codes:
+                k = 1
+                for d in reversed(days):
+                    if any(c in v for v in d.get(cat, {}).values()):
+                        k += 1
+                    else:
+                        break
+                out.setdefault(c, {})[cat] = k
+    return out

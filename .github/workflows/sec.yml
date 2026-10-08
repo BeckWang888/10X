@@ -1,0 +1,39 @@
+name: 更新美股歷史財報（SEC）
+
+on:
+  schedule:
+    - cron: "0 18 1 * *"     # 每月 2 日台灣時間凌晨 2:00（在每月回測之前）
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tracker
+  cancel-in-progress: false
+
+jobs:
+  sec:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: 抓 SEC 財報
+        run: python sec.py
+
+      - name: 存回 repo
+        run: |
+          git config user.name "tracker-bot"
+          git config user.email "tracker-bot@users.noreply.github.com"
+          git add data/backtest/us_fundamentals.csv.gz data/backtest/us_cik.csv
+          git diff --cached --quiet || git commit -m "SEC 財報更新 $(date +%F)"
+          git pull --rebase
+          git push

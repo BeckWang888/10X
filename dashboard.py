@@ -1,6 +1,7 @@
 """把評分結果輸出成儀表板：site/index.html（表格＋說明）＋ site/charts/*.json（每檔的 K 線資料，點開才載入）。"""
 import json
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -88,7 +89,7 @@ def chart_json(t, px):
 
 
 def build(cand, ind, hot_sub, techs, prices, sym_of, bt, demo=False):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d %H:%M") + "（台灣時間）"
     rows = _clean(cand)
     for r in rows:
         r["bt"] = pick_stats(bt, r["市場"], r["階段"], r["細分"], r["相對強度"], r["營收狀態"])

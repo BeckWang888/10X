@@ -21,9 +21,9 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -31,7 +31,7 @@ jobs:
       - run: pip install -r requirements.txt
 
       - name: 基本面快取（7 天內不重抓）
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: data/cache
           key: fundamentals-${{ github.run_id }}
@@ -50,9 +50,9 @@ jobs:
           git diff --cached --quiet || git commit -m "分數紀錄 $(date +%F)"
           git push
 
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
       - id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

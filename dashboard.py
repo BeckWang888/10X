@@ -24,6 +24,44 @@ COLOR = {stages.SEED: "#0d9488", stages.IGNITE: "#ea580c", stages.RUN: "#dc2626"
          stages.WEAK: "#ca8a04", stages.DOWN: "#475569", stages.RANGE: "#a1a1aa"}
 
 
+def manual_html():
+    """把 CLAUDE.md 裡「說明書」區塊轉成 HTML（只支援 ## ### - ** 這幾種格式）"""
+    import html as H
+    import re
+    p = config.ROOT / "CLAUDE.md"
+    if not p.exists():
+        return ""
+    t = p.read_text(encoding="utf-8")
+    m = re.search(r"<!-- 說明書開始 -->(.*?)<!-- 說明書結束 -->", t, re.S)
+    if not m:
+        return ""
+    out, depth = [], 0
+    fmt = lambda x: re.sub(r"`(.+?)`", r"<code>\1</code>", re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", H.escape(x)))
+    for line in m.group(1).strip().splitlines():
+        b = re.match(r"^( *)- (.*)", line)
+        if b:
+            lv = len(b.group(1)) // 2 + 1
+            while depth < lv:
+                out.append("<ul>")
+                depth += 1
+            while depth > lv:
+                out.append("</ul>")
+                depth -= 1
+            out.append(f"<li>{fmt(b.group(2))}</li>")
+            continue
+        while depth:
+            out.append("</ul>")
+            depth -= 1
+        if line.startswith("### "):
+            out.append(f"<h4>{fmt(line[4:])}</h4>")
+        elif line.startswith("## "):
+            out.append(f"<h3>{fmt(line[3:])}</h3>")
+        elif line.strip():
+            out.append(f"<p>{fmt(line)}</p>")
+    out += ["</ul>"] * depth
+    return "\n".join(out)
+
+
 def _clean(df):
     recs = df.replace({np.nan: None}).to_dict(orient="records")
     return recs
@@ -157,7 +195,7 @@ def build(cand, ind, hot_sub, techs, prices, sym_of, bt, demo=False, sel=None, s
     codes = set(cand["代號"]) | set(ind["代號"] if len(ind) else []) | set(surge["代號"] if surge is not None and len(surge) else [])
     cik = {c: int(cikmap[c]) for c in codes if c in cikmap}
     crash = {mk: m.get("crash", {}) for mk, m in bt.get("markets", {}).items()}
-    data = {"alerts": _clean(alert) if alert is not None and len(alert) else [], "crashStats": crash,
+    data = {"manual": manual_html(), "alerts": _clean(alert) if alert is not None and len(alert) else [], "crashStats": crash,
             "yf": yf, "cik": cik, "sel": sel or {}, "streak": streak or {}, "ai": ai or {}, "surgeStats": surge_stats,
             "surge": _clean(surge) if surge is not None and len(surge) else [],
             "trades": trades, "val": val, "cats": cats, "cand": rows, "ind": _clean(ind), "hot": hot_sub, "guide": guide, "base": base,
@@ -232,6 +270,13 @@ td.wrapc{white-space:normal;min-width:120px;max-width:170px}
 .al{display:grid;grid-template-columns:1fr auto;gap:2px 10px;padding:7px 0;border-top:1px solid var(--line);cursor:pointer}
 .al:hover{background:var(--chip)}.al .tg{display:inline-block;font-size:11px;font-weight:700;padding:0 6px;border-radius:99px;background:#fee2e2;color:#991b1b;margin-right:4px}
 .al .hint{grid-column:1/3;font-size:12px;color:var(--mute)}
+#man{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;z-index:11;overflow:auto;padding:24px 12px}
+#man.open{display:block}
+#man .panel{max-width:820px;line-height:1.75}
+#man h3{font-size:16px;margin:18px 0 4px;padding-top:10px;border-top:1px solid var(--line);color:var(--acc)}
+#man h3:first-of-type{border-top:0}
+#man ul{margin:2px 0;padding-left:20px}#man li{margin:1px 0}#man ul ul{color:var(--mute)}
+.manbtn{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:10px;padding:7px 14px;font:inherit;font-weight:600;cursor:pointer;margin-left:8px}
 .links{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 .links a{font-size:12px;padding:3px 10px;border-radius:99px;background:var(--chip);color:var(--ink);text-decoration:none;border:1px solid var(--line)}
 .links a:hover{border-color:var(--acc);color:var(--acc)}
@@ -271,7 +316,8 @@ td.wrapc{white-space:normal;min-width:120px;max-width:170px}
 <div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><h1>十倍股追蹤器</h1>
 <button id="theme" style="border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:99px;padding:5px 12px;font:inherit;font-size:13px;cursor:pointer"></button></div>
 <div class="sub" id="sub"></div>
-<div class="seg" id="mk"><button data-m="" class="on">全部</button><button data-m="台股">台股</button><button data-m="美股">美股</button></div>
+<div style="display:flex;flex-wrap:wrap;align-items:center"><div class="seg" id="mk"><button data-m="" class="on">全部</button><button data-m="台股">台股</button><button data-m="美股">美股</button></div>
+<button class="manbtn" id="manbtn" style="margin-top:10px">📖 說明書</button></div>
 
 <div id="alerts"></div>
 
@@ -309,6 +355,13 @@ td.wrapc{white-space:normal;min-width:120px;max-width:170px}
 分數是相對排名的參考。顏色採台股習慣：<span class="up">紅＝漲</span>、<span class="dn">綠＝跌</span>。<b>這不是買賣建議。</b>
 </div>
 </div>
+
+<div id="man"><div class="panel">
+ <button class="x" onclick="document.getElementById('man').classList.remove('open')">×</button>
+ <h2 style="margin-top:0">📖 說明書：選股與精選規則</h2>
+ <div class="small">這份說明和程式用的是同一份規則（存在 CLAUDE.md），改邏輯時會一起更新。</div>
+ <div id="mantext"></div>
+</div></div>
 
 <div id="dlg"><div class="panel">
  <button class="x" onclick="closeDlg()">×</button>
@@ -639,6 +692,10 @@ function drawCharts(d,r){
 [...new Set(C.map(r=>r.主題))].forEach(t=>ft.add(new Option(t,t)));
 [ft,fh].forEach(e=>e.onchange=draw);document.getElementById("q").oninput=draw;
 rule();guide();alertsView();picks();draw();ind();
+document.getElementById("mantext").innerHTML=D.manual||"（找不到說明書）";
+document.getElementById("manbtn").onclick=()=>document.getElementById("man").classList.add("open");
+document.getElementById("man").onclick=e=>{if(e.target.id=="man")e.target.classList.remove("open")};
+document.addEventListener("keydown",e=>{if(e.key=="Escape")document.getElementById("man").classList.remove("open")});
 /* ---------- 深色／淺色 ---------- */
 const themeBtn=document.getElementById("theme");
 const setThemeLabel=()=>themeBtn.textContent=document.documentElement.dataset.theme==="light"?"🌙 深色":"☀️ 淺色";

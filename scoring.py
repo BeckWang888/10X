@@ -35,8 +35,9 @@ def technicals(px, bench):
     last = s.iloc[-1]
     c, v = px["Close"], px["Volume"]
     st, sub, pos = stages.describe(last)
+    feat = stages.features(s, px["Volume"]).iloc[-1].to_dict()
     t = {
-        "series": s,
+        "series": s, "feat": feat,
         "close": float(last["close"]), "date": c.index[-1].strftime("%Y-%m-%d"),
         "chg1d": float(c.iloc[-1] / c.iloc[-2] - 1) if len(c) > 1 else None,
         "ret_6m": float(c.iloc[-1] / c.iloc[-127] - 1) if len(c) > 127 else np.nan,

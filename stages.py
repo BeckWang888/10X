@@ -87,6 +87,35 @@ def compute(px):
     return out
 
 
+# 精選模型用的個股特徵（即時與回測共用）。rs_pct（全市場相對強度百分位）和台股月營收另外加。
+FEATURES = {
+    "above_low": "離半年低點漲幅",
+    "ext50": "50 日線乖離",
+    "dist150": "離 150 日線（出場線）",
+    "from_high": "離一年高點",
+    "days_in": "起漲天數",
+    "vol_ratio": "近 20 日量／半年均量",
+    "rsi": "RSI",
+    "slope150": "150 日線斜率",
+}
+
+
+def features(s, volume):
+    """s：compute() 的結果；volume：成交量。回傳每天的特徵 DataFrame。"""
+    v = volume.reindex(s.index).astype(float)
+    return pd.DataFrame({
+        "above_low": s["close"] / s["low120"] - 1,
+        "ext50": s["ext50"],
+        "dist150": s["close"] / s["ma150"] - 1,
+        "from_high": s["from_high"],
+        "days_in": s["days_in"],
+        "vol_ratio": v.rolling(20).mean() / v.rolling(120).mean().replace(0, np.nan),
+        "rsi": s["rsi"],
+        "slope150": s["ma150"] / s["ma150"].shift(20) - 1,
+        "past6": s["close"] / s["close"].shift(126) - 1,
+    }, index=s.index)
+
+
 def describe(row):
     """把某一天的計算結果轉成白話：階段、細分、週期位置說明。"""
     st = ORDER[int(row["stage"])] if row["stage"] >= 0 else "資料不足"

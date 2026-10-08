@@ -24,6 +24,7 @@ import pandas as pd
 import requests
 
 import config
+import picks
 import stages
 
 OUT = config.ROOT / "data" / "backtest" / "stage_stats.json"
@@ -161,13 +162,15 @@ def samples(sym, px, bench_close, market, dates):
     b = bench_close.reindex(c.index).ffill()
     dollar = (px["Close"] * px["Volume"]).rolling(20).mean()
     min_dollar, min_px = LIQ[market]
+    feat = stages.features(s, px["Volume"])
     df = pd.DataFrame({
-        "stage": s["stage"], "gain_base": s["gain_base"], "past6": c / c.shift(H6) - 1,
+        "stage": s["stage"], "gain_base": s["gain_base"],
         "r6": fwd[H6], "r12": fwd[H12], "x12": fwd[H12] - (b.shift(-H12) / b - 1),
         "max24": max24, "dd6": min6,
     })
     min24 = pd.Series(rev.rolling(H24, min_periods=H24).min().to_numpy()[::-1], index=c.index).shift(-1) / c
     df["half24"] = (min24 <= 0.5).where(min24.notna())          # 2 年內曾腰斬（跌掉一半）
+    df = df.join(feat)
     ok = (s["stage"] >= 0) & (dollar >= min_dollar) & (c >= min_px)
     out = df[ok & df.index.isin(dates)]
     out.index.name = "date"
@@ -196,10 +199,17 @@ def trades(sym, s, bench, ok):
     return pd.DataFrame(rows)
 
 
-def build(market, syms):
+def build(market, syms, reuse_px=False):
     bench_sym = config.BENCHMARK[market]
     print(f"{market}：{len(syms)} 檔")
-    px = download(syms + [bench_sym])
+    cache = config.CACHE_DIR / f"bt_prices_{'us' if market == '美股' else 'tw'}.pkl"
+    if reuse_px and cache.exists():
+        px = pd.read_pickle(cache)
+    else:
+        px = download(syms + [bench_sym])
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        pd.to_pickle(px, cache)
+    px = dict(px)
     bench = px.pop(bench_sym)["Close"]
     dates = set(bench.index[::STEP])
     parts, tparts = [], []
@@ -344,7 +354,7 @@ def main():
             us = random.sample(us, 2500)
         frames = {}
         for market, syms in (("美股", us), ("台股", tw)):
-            df, tr, bench = build(market, syms)
+            df, tr, bench = build(market, syms, reuse_px="--reuse-prices" in sys.argv)
             frames[market] = {"df": df, "trades": tr, "period": [str(bench.index[0].date()), str(bench.index[-1].date())]}
         SAMPLE_PKL.parent.mkdir(parents=True, exist_ok=True)
         pd.to_pickle(frames, SAMPLE_PKL)
@@ -359,7 +369,15 @@ def main():
         result["markets"][market] = {"n_stocks": int(df["sym"].nunique()), "n": int(len(df)),
                                      "period": fr["period"], "stats": stats,
                                      "rs_cut": [float(last.quantile(RS_LOW)), float(last.quantile(RS_TOP))],
-                                     "trades": summarize_trades(fr["trades"])}
+                                     "trades": summarize_trades(fr["trades"]),
+                                     "past6_q": [float(x) for x in last.quantile(np.linspace(0, 1, 21))],
+                                     "model": picks.train(df, market)}
+        mv = result["markets"][market]["model"]
+        print(f"  --- 精選模型驗證（2021 前建模、2022 後檢驗；w={mv['w']}）")
+        for st, v in mv["val"].items():
+            if "w12" in v:
+                print(f"  {st:<8} 預估最高 20% 實際12月勝率 {v['w12']['top']:.0%}、最低 20% {v['w12']['bottom']:.0%}、"
+                      f"全體 {v['w12']['all']:.0%}；腰斬 高預估組 {v.get('h24', {}).get('top', 0):.0%}")
         print(f"\n===== {market}（{df['sym'].nunique()} 檔，{len(df):,} 筆）")
         for k, v in stats.items():
             print(f"  {k:<28} n={v['n']:>7}  12月勝率 {v['win12'] or 0:.0%}  贏大盤 {v['beat12'] or 0:.0%}  "

@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 import config
+import picks
 import scoring
 import stages
 
@@ -117,7 +118,9 @@ def build(cand, ind, hot_sub, techs, prices, sym_of, bt, demo=False):
                                                     encoding="utf-8")
 
     trades = {mk: m.get("trades") for mk, m in bt.get("markets", {}).items() if m.get("trades")}
-    data = {"trades": trades, "cand": rows, "ind": _clean(ind), "hot": hot_sub, "guide": guide, "base": base,
+    val = {mk: (m.get("model") or {}).get("val", {}) for mk, m in bt.get("markets", {}).items()}
+    cats = [{"name": n, "stage": st, "key": k} for n, st, k in picks.CATEGORIES]
+    data = {"trades": trades, "val": val, "cats": cats, "cand": rows, "ind": _clean(ind), "hot": hot_sub, "guide": guide, "base": base,
             "dates": dates, "time": now + ("（模擬資料，僅供預覽）" if demo else ""),
             "btDate": bt.get("generated"), "order": stages.ORDER,
             "colors": [COLOR[s] for s in stages.ORDER]}
@@ -139,7 +142,7 @@ TEMPLATE = r"""<!doctype html>
 --line:#2c2c31;--chip:#26262b;--up:#f87171;--dn:#4ade80;--good:#3b2f12}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
 font:14px/1.55 -apple-system,"Noto Sans TC","Microsoft JhengHei",sans-serif}
-.wrap{max-width:1320px;margin:0 auto;padding:20px 16px 60px}
+.wrap{max-width:1500px;margin:0 auto;padding:20px 16px 60px}
 h1{font-size:22px;margin:0}.sub{color:var(--mute);font-size:12px;margin-top:2px}
 h2{font-size:16px;margin:26px 0 8px}
 details.guide{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:16px 0}
@@ -160,10 +163,23 @@ details.guide summary{cursor:pointer;font-weight:600}
 .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0}
 select,input{background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 8px;font:inherit}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:auto}
-table{border-collapse:collapse;width:100%;min-width:1180px}
+table{border-collapse:collapse;width:100%;min-width:1060px}
 th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;vertical-align:top}
 th{position:sticky;top:0;background:var(--card);font-size:12px;color:var(--mute);cursor:pointer;user-select:none;z-index:1}
-td.l,th.l{text-align:left}tbody tr{cursor:pointer}tbody tr:hover td{background:var(--chip)}
+td.l,th.l{text-align:left}
+#t td:first-child,#t th:first-child{position:sticky;left:0;background:var(--card);z-index:2}
+#t th:first-child{z-index:3}
+td.wrapc{white-space:normal;min-width:120px;max-width:170px}
+.seg{display:inline-flex;background:var(--chip);border-radius:10px;padding:3px;gap:3px;margin:14px 0 4px}
+.seg button{border:0;background:none;color:var(--ink);font:inherit;font-weight:600;padding:6px 18px;border-radius:8px;cursor:pointer}
+.seg button.on{background:var(--acc);color:#fff}
+.picks{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px}
+.pk{background:var(--card);border:1px solid var(--line);border-top:4px solid var(--c);border-radius:12px;padding:10px 12px}
+.pk h3{margin:0;font-size:15px}.pk .vn{color:var(--mute);font-size:11px;margin:2px 0 6px}
+.pi{display:grid;grid-template-columns:22px 1fr auto;gap:2px 8px;padding:7px 0;border-top:1px solid var(--line);cursor:pointer}
+.pi:hover{background:var(--chip)}.pi .rk{font-weight:700;color:var(--c);font-size:16px}
+.pi .sc{font-size:20px;font-weight:700;text-align:right}.pi .why{grid-column:2/4;font-size:12px;color:var(--mute)}
+.empty{color:var(--mute);font-size:12px;padding:8px 0}.empty a{color:var(--acc)}tbody tr{cursor:pointer}tbody tr:hover td{background:var(--chip)}
 .name{font-weight:600}.code{color:var(--mute);font-size:12px;margin-left:4px}.small{color:var(--mute);font-size:12px}
 .tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;color:#fff;background:var(--c)}
 .sbar{display:inline-block;width:56px;height:7px;background:var(--chip);border-radius:9px;vertical-align:middle;margin-right:5px;overflow:hidden}
@@ -192,8 +208,13 @@ td.l,th.l{text-align:left}tbody tr{cursor:pointer}tbody tr:hover td{background:v
 </style></head><body><div class="wrap">
 <h1>十倍股追蹤器</h1>
 <div class="sub" id="sub"></div>
+<div class="seg" id="mk"><button data-m="" class="on">全部</button><button data-m="台股">台股</button><button data-m="美股">美股</button></div>
 
-<details class="guide" open><summary>怎麼看這張表（第一次請看）</summary>
+<h2>今日精選（依回測勝率＋基本面）</h2>
+<div class="small" id="pknote"></div>
+<div class="picks" id="picks" style="margin-top:8px"></div>
+
+<details class="guide"><summary>怎麼看這張表：階段說明、進出場規則、回測（點開）</summary>
 <div class="steps">
  <div class="step"><b>① 看階段</b>：這檔股票現在在漲跌循環的哪個位置（下方 7 張卡，依循環順序排）。</div>
  <div class="step"><b>② 看歷史勝率</b>：過去 10 年全市場股票在「同樣狀態」時，12 個月後上漲的比例。比全市場平均高才有優勢。</div>
@@ -205,8 +226,8 @@ td.l,th.l{text-align:left}tbody tr{cursor:pointer}tbody tr:hover td{background:v
 <div class="small" id="btnote"></div>
 </details>
 
+<h2>全部候選股</h2>
 <div class="bar">
- <select id="fm"><option value="">全部市場</option><option>美股</option><option>台股</option></select>
  <select id="ft"><option value="">全部主題</option></select>
  <input id="q" placeholder="搜尋代號或名稱">
  <label><input type="checkbox" id="fh"> 只看產業已發動</label>
@@ -277,32 +298,61 @@ function guide(){
  document.getElementById("btnote").innerHTML=parts.length?`卡片下方括號＝比全市場平均高／低幾個百分點；3倍率＝2 年內曾漲到 3 倍的機率是平均的幾倍。回測樣本：${parts.join("；")}。「腰斬」＝2 年內曾跌掉一半的機率，和「漲 3 倍」一起看才知道風險。點卡片可篩選。`:"尚未執行回測（python backtest.py）";
 }
 
-const cols=[["名稱","l"],["股價"],["階段","l"],["操作","l"],["出場線"],["歷史勝率"],["3倍／腰斬"],["相對強度"],["營收YoY"],["總分"],["⚡爆發力"],["🏔️長跑力"],["RSI"],["市值(億美元)"],["紅旗","l"]];
-const val=(r,k)=>k=="歷史勝率"?(r.bt?r.bt.win12:null):k=="3倍／腰斬"?(r.bt?r.bt.p3x:null):k=="出場線"?(r.出場線?r.股價/r.出場線-1:null):k=="名稱"?r.代號:r[k];
+/* ---------- 市場切換 ---------- */
+let mk="";
+document.querySelectorAll("#mk button").forEach(b=>b.onclick=()=>{mk=b.dataset.m;
+ document.querySelectorAll("#mk button").forEach(x=>x.classList.toggle("on",x==b));picks();draw()});
+
+/* ---------- 今日精選 ---------- */
+function picks(){
+ const out=D.cats.map(c=>{
+  const isHot=c.key=="w6", wk=isHot?"預估6月勝率":"預估勝率", sk=isHot?"階段6月勝率":"階段勝率";
+  const okKey=isHot?"6月模型有效":"勝率模型有效";
+  const list=C.filter(r=>r.精選分類==c.name&&r.精選分!=null&&!r.紅旗&&(!mk||r.市場==mk)).sort((a,b)=>b.精選分-a.精選分).slice(0,5);
+  const mks=mk?[mk]:Object.keys(D.val);
+  const vn=mks.map(m=>{const v=(D.val[m]||{})[c.stage];const t=v&&v[c.key];
+   return t?`${m}：預估最高 20% 實際${isHot?"6":"12"}月勝率 <b>${pp(t.top)}</b>、最低 20% ${pp(t.bottom)}${t.top-t.bottom<0.05?' <span class="flag">→ 未通過，改用腰斬風險＋總分排序</span>':' ✅'}`:""}).filter(x=>x).join("；");
+  const items=list.length?list.map((r,i)=>{const better=r[wk]-r[sk];
+   return `<div class="pi" data-c="${r.代號}"><span class="rk">${i+1}</span>
+    <div><span class="name">${r.名稱}</span><span class="code">${r.代號}・${r.市場}</span>　<b>${num(r.股價)}</b> ${pc(r.日漲跌,1)}<br>
+    <span class="small">${r.細分?r.細分+"・":""}${r[okKey]?`${isHot?"6 個月":"12 個月"}勝率 <b class="${better>0?'up':''}">${pp(r[wk])}</b>（階段平均 ${pp(r[sk])}）`:`勝率：階段平均 ${pp(r[sk])}（模型未通過驗證）`}・腰斬 <b>${pp(r.預估腰斬)}</b>（平均 ${pp(r.階段腰斬)}）・總分 ${r.總分}</span></div>
+    <div class="sc">${r.精選分}<div class="small" style="font-weight:400">精選分</div></div>
+    <div class="why">${r.加分理由?"✔ "+r.加分理由:""}${r.扣分理由?"<br>✘ "+r.扣分理由:""}<br>出場線 ${r.出場線?num(r.出場線)+"（距離 "+pp(r.股價/r.出場線-1)+"）":"–"}</div></div>`}).join("")
+   :`<div class="empty">目前沒有${mk||""}候選股在這個階段</div>`;
+  const flagged=C.filter(r=>r.精選分類==c.name&&r.紅旗&&(!mk||r.市場==mk));
+  const fnote=flagged.length?`<div class="empty">另有 ${flagged.length} 檔因紅旗未列入：${flagged.map(r=>`<a href="#${r.代號}" onclick="openDlg('${r.代號}');return false">${r.名稱}</a>`).join("、")}</div>`:"";
+  return `<div class="pk" style="--c:${colorOf(c.stage)}"><h3>${c.name}</h3>
+   <div class="vn">${isHot?"以「6 個月後仍上漲」的機率排序。":""}模型驗證（2021 前建模、2022 後檢驗）：${vn||"樣本不足"}</div>${items}${fnote}</div>`}).join("");
+ document.getElementById("picks").innerHTML=out;
+ document.querySelectorAll(".pi").forEach(e=>e.onclick=()=>openDlg(e.dataset.c));
+ document.getElementById("pknote").innerHTML=`每個階段挑出條件最好的前 5 名。<b>精選分</b>＝回測預估勝率 50%＋低腰斬風險 25%＋基本面總分 25%（和同市場其他候選股比）；勝率模型沒通過驗證的階段，改成低腰斬風險 40%＋總分 60%。✔ 加分、✘ 扣分＝和同階段歷史平均比，這個條件讓勝率高／低了幾個百分點。有紅旗的不列入。`;
+}
+
+const cols=[["名稱","l"],["股價"],["階段","l"],["操作","l"],["出場線"],["預估勝率"],["腰斬風險"],["強度／營收"],["總分"],["精選分"]];
+const val=(r,k)=>k=="出場線"?(r.出場線?r.股價/r.出場線-1:null):k=="名稱"?r.代號:k=="強度／營收"?r["6月漲幅"]:k=="腰斬風險"?r.預估腰斬:r[k];
 function draw(){
- const m=fm.value,t=ft.value,q=document.getElementById("q").value.trim().toLowerCase(),h=fh.checked;
+ const m=mk,t=ft.value,q=document.getElementById("q").value.trim().toLowerCase(),h=fh.checked;
  let rows=C.filter(r=>(!m||r.市場==m)&&(!t||r.主題==t)&&(!fStage||r.階段==fStage)&&(!h||r.產業已發動)
    &&(!q||(r.代號+r.名稱).toLowerCase().includes(q)));
  rows.sort((a,b)=>{const x=val(a,sortK),y=val(b,sortK);return (x==null)-(y==null)||(x>y?1:x<y?-1:0)*sortD});
  document.querySelector("#t thead").innerHTML="<tr>"+cols.map(([c,a])=>`<th class="${a||''}" data-k="${c}">${c}${sortK==c?(sortD<0?" ▼":" ▲"):""}</th>`).join("")+"</tr>";
  document.querySelectorAll("#t th").forEach(e=>e.onclick=()=>{const k=e.dataset.k;sortD=sortK==k?-sortD:-1;sortK=k;draw()});
  document.querySelector("#t tbody").innerHTML=rows.map(r=>{
-  const base=D.base[r.市場]||{}, bt=r.bt;
-  const good=bt&&base.win12!=null&&bt.win12-base.win12>=0.05;
   const stale=latest[r.市場]&&r.資料日期<latest[r.市場];
   const dist=r.出場線?r.股價/r.出場線-1:null;
+  const wd=r.預估勝率!=null&&r.階段勝率!=null?r.預估勝率-r.階段勝率:null;
+  const hd=r.預估腰斬!=null&&r.階段腰斬!=null?r.預估腰斬-r.階段腰斬:null;
   return `<tr data-c="${r.代號}">
- <td class="l"><span class="name">${r.名稱}</span><span class="code">${r.代號}</span><br><span class="small">${r.市場}・${r.主題}・${r.子題}</span>${r.產業已發動?' <span class="hot small">● 產業發動</span>':''}</td>
+ <td class="l"><span class="name">${r.名稱}</span><span class="code">${r.代號}</span><br><span class="small">${r.市場}・${r.子題}</span>${r.產業已發動?' <span class="hot small">●發動</span>':''}${r.紅旗?`<br><span class="flag">⚑ ${r.紅旗}</span>`:""}</td>
  <td><b>${num(r.股價)}</b><br>${pc(r.日漲跌,1)} <span class="small ${stale?'stale':''}">${r.資料日期.slice(5)}</span></td>
  <td class="l">${tag(r.階段)}${r.細分?` <b>${r.細分}</b>`:""}<br><span class="small">${r.週期位置||""}</span></td>
- <td class="l">${r.操作}</td>
+ <td class="l wrapc">${r.操作}</td>
  <td>${r.出場線?num(r.出場線):"–"}<br><span class="small">${dist!=null?"距離 "+pp(dist):""}</span></td>
- <td><span class="${good?'good':''}">${bt?pp(bt.win12):"–"}</span><br><span class="small">平均 ${pp(base.win12)}</span></td>
- <td>${bt?`<span class="up">${pp(bt.p3x)}</span> / <span class="dn">${pp(bt.half24)}</span>`:"–"}<br><span class="small">平均 ${pp(base.p3x)} / ${pp(base.half24)}</span></td>
- <td>${r.相對強度||"–"}<br><span class="small">6月 ${pc(r["6月漲幅"])}</span></td>
- <td>${pc(r.營收YoY)}<br><span class="small">${r.營收狀態||(r.營收加速!=null?(r.營收加速>0?"加速":"減速"):"")}</span></td>
- <td><b>${sb(r.總分,100)}</b></td><td>${sb(r["⚡爆發力"],100)}</td><td>${sb(r["🏔️長跑力"],100)}</td>
- <td>${r.RSI!=null?r.RSI.toFixed(0):"–"}</td><td>${r["市值(億美元)"]??"–"}</td><td class="l flag">${r.紅旗||""}</td></tr>`}).join("");
+ <td><span class="${r.勝率模型有效&&wd>0.03?'good':''}">${pp(r.預估勝率)}</span><br><span class="small">${r.勝率模型有效?"階段 "+pp(r.階段勝率):"未驗證＝階段平均"}</span></td>
+ <td><span class="${hd!=null&&hd<-0.03?'good':''}">${pp(r.預估腰斬)}</span><br><span class="small">階段 ${pp(r.階段腰斬)}</span></td>
+ <td>${r.相對強度||"–"}・${pc(r["6月漲幅"])}<br><span class="small">營收 ${pc(r.營收YoY)} ${r.營收狀態||(r.營收加速!=null?(r.營收加速>0?"加速":"減速"):"")}</span></td>
+ <td><b>${sb(r.總分,100)}</b><br><span class="small">⚡${r["⚡爆發力"]} 🏔️${r["🏔️長跑力"]}</span></td>
+ <td><b>${r.精選分??"–"}</b></td></tr>`}).join("");
  document.querySelectorAll("#t tbody tr").forEach(e=>e.onclick=()=>openDlg(e.dataset.c));
 }
 function ind(){
@@ -343,6 +393,14 @@ async function openDlg(code){
    <span>減碼線（50 日線）</span><b>${r.減碼線?num(r.減碼線)+"（距離 "+pp(r.股價/r.減碼線-1)+"）":"–"}</b>
    <span>出場線</span><b>${r.出場線?num(r.出場線)+"（距離 "+pp(r.股價/r.出場線-1)+"）":"–"}</b>
    <span>RSI(14)</span><b>${r.RSI?.toFixed(0)??"–"}</b></div></div>`;
+  if(r.預估勝率!=null){const v=((D.val[o.市場]||{})[r.階段]||{}).w12;
+   h+=`<div class="box"><h3>回測模型：這檔的預估（和同階段股票比）</h3>
+   <div class="kv"><span>12 個月後上漲機率</span><b>${r.勝率模型有效?pp(r.預估勝率)+'　<span class="small">階段平均 '+pp(r.階段勝率)+'</span>':'<span class="small">模型未通過驗證，僅供參考：階段平均</span> '+pp(r.階段勝率)}</b>
+   <span>6 個月後上漲機率</span><b>${r["6月模型有效"]?pp(r.預估6月勝率)+'　<span class="small">階段平均 '+pp(r.階段6月勝率)+'</span>':'<span class="small">未通過驗證：階段平均</span> '+pp(r.階段6月勝率)}</b>
+   <span>2 年內腰斬機率</span><b>${pp(r.預估腰斬)}　<span class="small">階段平均 ${pp(r.階段腰斬)}</span></b>
+   <span>精選分</span><b>${r.精選分??"–"}</b></div>
+   <div class="small" style="margin-top:6px">${r.加分理由?"✔ 加分："+r.加分理由+"<br>":""}${r.扣分理由?"✘ 扣分："+r.扣分理由+"<br>":""}括號＝這個條件讓 12 個月勝率比同階段平均高／低幾個百分點。
+   ${v?`<br>模型驗證：2022 年後，預估最高 20% 實際勝率 ${pp(v.top)}、最低 20% ${pp(v.bottom)}。`:""}</div></div>`;}
   h+=`<div class="box"><h3>歷史上同樣狀態的股票，後來怎麼樣</h3>${bt?`
    <div class="small" style="margin-bottom:6px">依據：<b>${bt.key}</b>（${o.市場}全市場 ${bt.n_stocks} 檔、${bt.n.toLocaleString()} 次樣本）</div>
    <div class="kv"><span>12 個月後上漲機率</span><b>${pp(bt.win12)}　<span class="small">平均 ${pp(base.win12)}</span></b>
@@ -427,7 +485,7 @@ function drawCharts(d,r){
 }
 
 [...new Set(C.map(r=>r.主題))].forEach(t=>ft.add(new Option(t,t)));
-[fm,ft,fh].forEach(e=>e.onchange=draw);document.getElementById("q").oninput=draw;
-rule();guide();draw();ind();
+[ft,fh].forEach(e=>e.onchange=draw);document.getElementById("q").oninput=draw;
+rule();guide();picks();draw();ind();
 if(location.hash.length>1)openDlg(decodeURIComponent(location.hash.slice(1)));
 </script></body></html>"""

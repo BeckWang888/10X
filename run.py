@@ -12,6 +12,7 @@ import pandas as pd
 
 import config
 import dashboard
+import picks
 import scoring
 from data import load_watchlist
 
@@ -84,6 +85,7 @@ def main():
     bt = load_backtest()
     rs_cut = {m: v.get("rs_cut") for m, v in bt.get("markets", {}).items()}
     cand, ind, hot_sub, techs = scoring.score_all(wl, prices, funds, mrevs, sym_of, rs_cut)
+    cand = picks.apply(cand, techs, mrevs, bt)
 
     # 存歷史紀錄（之後回測校準機率要用）
     if not demo:

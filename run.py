@@ -137,8 +137,9 @@ def main():
         rows = [r for r in rows if not (r["代號"] in seen or seen.add(r["代號"]))]
         ai = news.analyze_many(rows)
 
-    # 存歷史紀錄（之後回測校準機率要用）
-    if not demo:
+    # 存歷史紀錄（之後回測校準機率要用）。只在 GitHub Actions 上存，本機測試不寫，避免和機器人的紀錄衝突
+    import os
+    if not demo and (os.environ.get("GITHUB_ACTIONS") or "--save-history" in sys.argv):
         cand.to_csv(config.HISTORY_DIR / f"scores_{datetime.now():%Y%m%d}.csv", index=False, encoding="utf-8-sig")
         (config.HISTORY_DIR / f"picks_{datetime.now():%Y%m%d}.json").write_text(
             json.dumps(sel, ensure_ascii=False), encoding="utf-8")

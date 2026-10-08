@@ -315,7 +315,7 @@ td.wrapc{white-space:normal;min-width:120px;max-width:170px}
  <div id="dhead"></div>
  <div class="boxes" id="dboxes"></div>
  <div class="chartbox">
-  <div class="rng" id="rng"><button data-tf="d1">當日</button><button data-tf="d5">五日</button><button data-tf="day" class="on">日K</button><button data-tf="week">週K</button><button data-tf="month">月K</button></div>
+  <div class="rng" id="rng"><button data-tf="d1">當日</button><button data-tf="d5">五日</button><button data-tf="day">日K</button><button data-tf="week" class="on">週K</button><button data-tf="month">月K</button></div>
   <div class="ribbon" id="ribbon"></div>
   <div class="legend" id="lg1"></div><div id="c1" style="height:340px"></div>
   <div class="legend" id="lg2"></div><div id="c2" style="height:130px"></div>
@@ -480,7 +480,7 @@ function ind(){
 }
 
 /* ---------- 個股視窗 ---------- */
-let charts=[], cdata=null, curR=null, tf="day";
+let charts=[], cdata=null, curR=null, tf="week";   // 預設週 K（比較宏觀）
 function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim()}
 function closeDlg(){document.getElementById("dlg").classList.remove("open");charts.forEach(c=>c.remove());charts=[];if(location.hash)history.replaceState(null,"",location.pathname)}
 document.addEventListener("keydown",e=>{if(e.key=="Escape")closeDlg()});

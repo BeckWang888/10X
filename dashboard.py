@@ -203,7 +203,8 @@ def build(cand, ind, hot_sub, techs, prices, sym_of, bt, demo=False, sel=None, s
             cik[it["代號"]] = int(cikmap[it["代號"]])
         if it["市場"] == "台股":
             yf.setdefault(it["代號"], it.get("yf"))
-    data = {"manual": manual_html(), "screen": screen, "screenStats": screen_stats, "alerts": _clean(alert) if alert is not None and len(alert) else [], "crashStats": crash,
+    top3 = {mk: (m.get("model") or {}).get("top3", {}) for mk, m in bt.get("markets", {}).items()}
+    data = {"manual": manual_html(), "top3": top3, "screen": screen, "screenStats": screen_stats, "alerts": _clean(alert) if alert is not None and len(alert) else [], "crashStats": crash,
             "yf": yf, "cik": cik, "sel": sel or {}, "streak": streak or {}, "ai": ai or {}, "surgeStats": surge_stats,
             "surge": _clean(surge) if surge is not None and len(surge) else [],
             "trades": trades, "val": val, "cats": cats, "cand": rows, "ind": _clean(ind), "hot": hot_sub, "guide": guide, "base": base,
@@ -285,6 +286,11 @@ td.wrapc{white-space:normal;min-width:120px;max-width:170px}
 #man h3:first-of-type{border-top:0}
 #man ul{margin:2px 0;padding-left:20px}#man li{margin:1px 0}#man ul ul{color:var(--mute)}
 .manbtn{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:10px;padding:7px 14px;font:inherit;font-weight:600;cursor:pointer;margin-left:8px}
+.best{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:10px}
+.bc{background:linear-gradient(135deg,var(--card),var(--chip));border:1px solid var(--line);border-top:4px solid #f59e0b;border-radius:12px;padding:10px 12px}
+.bc h3{margin:0 0 2px;font-size:15px}.bi{display:grid;grid-template-columns:26px 1fr auto;gap:2px 8px;padding:8px 0;border-top:1px solid var(--line);cursor:pointer}
+.bi:hover{background:var(--chip)}.bi .rk{font-size:20px;font-weight:800;color:#f59e0b}.bi .sc{font-size:22px;font-weight:800;text-align:right}
+.bi .why{grid-column:2/4;font-size:12px;color:var(--mute)}
 .scr{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:10px;align-items:start}
 .sc-card{background:var(--card);border:1px solid var(--line);border-top:4px solid #0ea5e9;border-radius:12px;padding:10px 12px}
 .sc-card h3{margin:0;font-size:15px;cursor:pointer;user-select:none;display:flex;justify-content:space-between;gap:6px}
@@ -336,13 +342,17 @@ td.wrapc{white-space:normal;min-width:120px;max-width:170px}
 <div style="display:flex;flex-wrap:wrap;align-items:center"><div class="seg" id="mk"><button data-m="" class="on">全部</button><button data-m="台股">台股</button><button data-m="美股">美股</button></div>
 <button class="manbtn" id="manbtn" style="margin-top:10px">📖 說明書</button></div>
 
+<h2>🏆 最強名單（全部條件最好的前 3 名）</h2>
+<div class="small" id="bestnote"></div>
+<div class="best" id="best" style="margin-top:8px"></div>
+
 <div id="alerts"></div>
 
 <h2>今日精選（依回測勝率＋基本面）</h2>
 <div class="small" id="pknote"></div>
 <div class="picks" id="picks" style="margin-top:8px"></div>
 
-<h2>🔎 每月自動篩選（新候選股，等你確認）</h2>
+<h2>🔎 每月自動篩選（依條件自動加入／移除候選股）</h2>
 <div class="small" id="scrnote"></div>
 <div class="scr" id="scr" style="margin-top:8px"></div>
 
@@ -440,7 +450,7 @@ function guide(){
 /* ---------- 市場切換 ---------- */
 let mk="";
 document.querySelectorAll("#mk button").forEach(b=>b.onclick=()=>{mk=b.dataset.m;
- document.querySelectorAll("#mk button").forEach(x=>x.classList.toggle("on",x==b));alertsView();picks();screenView();draw()});
+ document.querySelectorAll("#mk button").forEach(x=>x.classList.toggle("on",x==b));bestView();alertsView();picks();screenView();draw()});
 
 /* ---------- 急跌警報 ---------- */
 const AL={};D.alerts.forEach(a=>AL[a.代號]=a);
@@ -467,12 +477,29 @@ function links(code,m){
   ["SEC EDGAR・官方申報",cik?`https://www.sec.gov/edgar/browse/?CIK=${cik}`:`https://www.sec.gov/edgar/search/#/q=${code}`]]}
 const linkHtml=(code,m)=>`<div class="links">🔗 ${links(code,m).map(([t,u])=>`<a href="${u}" target="_blank" rel="noopener">${t}</a>`).join("")}</div>`;
 
+/* ---------- 🏆 最強名單 ---------- */
+function bestView(){
+ const mks=mk?[mk]:["台股","美股"];
+ document.getElementById("best").innerHTML=mks.map(m=>{
+  const codes=((D.sel["🏆 最強"]||{})[m]||[]), t=D.top3[m]||{}, P=t.pool, T=t.top;
+  const pass=P&&T&&T.p3x>=P.p3x&&T.half24<=P.half24;
+  const v=P&&T?`<div class="small" style="margin-bottom:4px">${pass?"✅":"⚠️ 未通過驗證，僅供參考——"}2022 年後每週照這規則挑 3 檔：2 年漲 3 倍 <b>${pp(T.p3x,1)}</b>（候選平均 ${pp(P.p3x,1)}）・4 年漲 5 倍 ${pp(T.p5x48,1)}（${pp(P.p5x48,1)}）・腰斬 <b>${pp(T.half24)}</b>（${pp(P.half24)}）・12 個月勝率 ${pp(T.win12)}（${pp(P.win12)}）</div>`:"";
+  const items=codes.map(c=>C.find(r=>r.代號==c)).filter(x=>x).map((r,i)=>`<div class="bi" data-c="${r.代號}"><span class="rk">${i+1}</span>
+   <div><span class="name" style="font-size:15px">${r.名稱}</span>${badge(r.代號,"🏆 最強")}<span class="code">${r.代號}・${r.主題}／${r.子題}</span>　<b>${num(r.股價)}</b> ${pc(r.日漲跌,1)}<br>
+   <span class="small">${tag(r.階段)} ${r.細分||""}・2 年漲 3 倍 <b class="up">${pp(r.預估3倍)}</b>（階段 ${pp(r.階段3倍)}）・勝率 ${pp(r.預估勝率)}・腰斬 <b>${pp(r.預估腰斬)}</b>・總分 ${r.總分}</span></div>
+   <div class="sc">${r.最強分}<div class="small" style="font-weight:400">最強分</div></div>
+   <div class="why">${aiLine(r.代號)?aiLine(r.代號)+"<br>":""}${r.提醒?"ⓘ "+r.提醒+"<br>":""}${r.加分理由?"✔ "+r.加分理由+"<br>":""}出場線 ${r.出場線?num(r.出場線)+"（距離 "+pp(r.股價/r.出場線-1)+"）":"–"}</div></div>`).join("");
+  return `<div class="bc"><h3>🏆 ${m}</h3>${v}${items||'<div class="empty">今天沒有股票通過全部條件</div>'}</div>`}).join("");
+ document.querySelectorAll(".bi").forEach(e=>e.onclick=()=>openDlg(e.dataset.c));
+ document.getElementById("bestnote").innerHTML=`全部用條件，不靠感覺。<b>必要條件</b>（有任何疑慮就排除）：🔥 發動期或 🚀 主升段前中段、沒有紅旗（美股自由現金流不為負）、今天沒有急跌警報、AI 新聞不是偏空。<b>排序</b>：最強分＝2 年漲 3 倍機率 40%＋12 個月勝率 30%＋低腰斬 30%（回測模型，和同市場候選比）。`;
+}
+
 /* ---------- 每月自動篩選 ---------- */
 const S=D.screen||{}, SI=S.items||[], openScr=new Set();
 function scrItem(x){const a=x.ai||{};
  const nums=x.市場=="美股"?`市值 ${x["市值(億美元)"]} 億美元・FCF 殖利率 ${x.自由現金流殖利率<-0.01?`<span class="flag">${pp(x.自由現金流殖利率,1)}（為負）</span>`:pp(x.自由現金流殖利率,1)}・帳面市值比 ${x.帳面市值比?.toFixed(2)}・營收年增 ${pc(x.營收年增)}`
   :`營收年增 ${pc(x.營收年增)}（加速 ${pc(x.營收加速)}）・${x.未確認獲利?'<span class="flag">未確認獲利</span>':"營業利益率 "+pp(x.營業利益率,1)}${x.股價淨值比?"・股價淨值比 "+x.股價淨值比.toFixed(1):""}`;
- return `<div class="sc-it" data-c="${x.代號}">${a.verdict?`<span class="vd ${a.verdict}">${a.verdict}</span>`:x.已在清單?'<span class="vd">已在清單</span>':""}<span class="name">${x.名稱}</span><span class="code">${x.代號}・${x.市場}</span>　${num(x.股價)}
+ return `<div class="sc-it" data-c="${x.代號}">${x.自動加入?'<span class="vd 建議加入">✅ 自動加入</span>':""}${a.verdict?`<span class="vd ${a.verdict}">AI：${a.verdict}</span>`:x.已在清單?'<span class="vd">已在清單</span>':""}<span class="name">${x.名稱}</span><span class="code">${x.代號}・${x.市場}</span>　${num(x.股價)}
   <div class="small">${a.theme&&a.theme!="不屬於"?`<b>${a.theme}</b>／${a.subtheme||""}・`:""}${nums}・離高點 ${pc(x.離一年高點)}・${x.階段||""}</div>
   ${a.business?`<div class="small">📌 ${a.business}　🛡 ${a.moat||"–"}　🛣 ${a.runway||"–"}</div><div class="small">→ ${a.reason||""}${(a.risks||[]).length?"　⚠ "+a.risks.join("；"):""}</div>`:""}</div>`}
 function screenView(){
@@ -491,12 +518,12 @@ function screenView(){
    ${off.length?`<div class="empty">另有 ${off.length} 檔主題不符（AI 判斷）：${off.map(x=>x.名稱).join("、")}</div>`:""}</div>
    <button class="more">${op?"收合 ▴":"展開全部 ▾"}</button></div>`}));
  const rm=(S.removals||[]).filter(x=>!mk||x.市場==mk);
- if(rm.length){const op=openScr.has("rm");html+=`<div class="sc-card ${op?'open':''}" data-k="rm" style="border-top-color:#dc2626"><h3>建議檢視是否移除（${rm.length}）<span class="tog">${op?"收合 ▴":"展開 ▾"}</span></h3><div class="body"><div class="small">現有候選股裡基本面明顯轉壞的，只是提醒，要不要移除由你決定。</div>
+ if(rm.length){const op=openScr.has("rm");html+=`<div class="sc-card ${op?'open':''}" data-k="rm" style="border-top-color:#dc2626"><h3>本月自動移除（${rm.length}）<span class="tog">${op?"收合 ▴":"展開 ▾"}</span></h3><div class="body"><div class="small">候選股裡出現疑慮條件的，已自動移出每日追蹤；條件改善後下個月自動恢復。</div>
   ${rm.map(x=>`<div class="sc-it" data-c="${x.代號}"><span class="name">${x.名稱}</span><span class="code">${x.代號}・${x.市場}</span><div class="small">${x.原因}</div></div>`).join("")}</div><button class="more">${op?"收合 ▴":"展開全部 ▾"}</button></div>`;}
  el.innerHTML=html;
  el.querySelectorAll(".sc-it").forEach(e=>e.onclick=()=>openDlg(e.dataset.c));
  el.querySelectorAll(".sc-card h3, .sc-card .more").forEach(b=>b.onclick=()=>{const k=b.closest(".sc-card").dataset.k;openScr.has(k)?openScr.delete(k):openScr.add(k);screenView()});
- document.getElementById("scrnote").innerHTML=`篩選日期 ${S.date}（每月 3 日自動更新）。第一層量化條件和回測同一套；第二層由 AI 讀公司簡介和新聞判斷主題、護城河、跑道。<b>要加入候選清單，告訴 Claude「加入 代號」即可</b>（會寫進 data/screen/approved.csv，隔天開始每日追蹤）。`;
+ document.getElementById("scrnote").innerHTML=`篩選日期 ${S.date}（每月 3 日自動更新）。第一層量化條件和回測同一套；第二層由 AI 讀公司簡介和新聞判斷主題、護城河、跑道。<b>全部自動</b>：每條路線取「主題符合、AI 沒有不建議、美股自由現金流不為負、台股本業有獲利」的前 3 名自動加入；有疑慮的候選股自動移除。也可以告訴 Claude「加入 代號」手動加入。`;
 }
 
 /* ---------- 今日精選 ---------- */
@@ -748,7 +775,7 @@ function drawCharts(d,r){
 
 [...new Set(C.map(r=>r.主題))].forEach(t=>ft.add(new Option(t,t)));
 [ft,fh].forEach(e=>e.onchange=draw);document.getElementById("q").oninput=draw;
-rule();guide();alertsView();picks();screenView();draw();ind();
+rule();guide();bestView();alertsView();picks();screenView();draw();ind();
 document.getElementById("mantext").innerHTML=D.manual||"（找不到說明書）";
 document.getElementById("manbtn").onclick=()=>document.getElementById("man").classList.add("open");
 document.getElementById("man").onclick=e=>{if(e.target.id=="man")e.target.classList.remove("open")};

@@ -1,4 +1,4 @@
-﻿"""每月自動篩選：從全市場找「有機會成為十倍股」的新候選股，給使用者確認後才加入觀察清單。
+﻿"""每月自動篩選：從全市場找「有機會成為十倍股」的新候選股，依條件自動加入；有疑慮的候選股自動移除。
 
   python screener.py            執行篩選＋AI 初評，結果存 data/screen/latest.json
   python screener.py --no-ai    不做 AI 初評
@@ -12,7 +12,7 @@
   台股 B 營收加速發動型        ：近 3 月營收年增 ≥20% 且加速、階段＝發動期
   共同：流動性門檻（美股日均成交 ≥200 萬美元、股價 ≥2 美元；台股 ≥2,000 萬台幣、股價 ≥10 元）
   台股另外用 FinMind 季報確認：本業有獲利（近 4 季營業利益率 >0）
-使用者確認要加入的股票寫在 data/screen/approved.csv，data.load_watchlist() 會自動併入。
+自動加入 → data/screen/auto_added.csv；自動移除 → auto_removed.csv；手動加入 → approved.csv（data.load_watchlist() 會處理）。
 """
 import json
 import sys
@@ -25,7 +25,10 @@ import config
 import stages
 
 OUT_DIR = config.ROOT / "data" / "screen"
-APPROVED = OUT_DIR / "approved.csv"
+APPROVED = OUT_DIR / "approved.csv"          # 使用者手動加入
+AUTO_ADD = OUT_DIR / "auto_added.csv"         # 每月依條件自動加入（累積）
+AUTO_RM = OUT_DIR / "auto_removed.csv"        # 每月依條件自動移除（每月重算，條件改善就自動恢復）
+ADD_PER_ROUTE = 3                             # 每條路線每月最多自動加入幾檔
 MCAP_LO, MCAP_HI = 1e8, 2e9
 LIQ = {"美股": (2e6, 2.0), "台股": (2e7, 10.0)}
 TOP_N = 15          # 每條路線最多列出幾檔（AI 判斷符合主題的）
@@ -200,7 +203,7 @@ def removals():
     """現有候選股裡，基本面明顯轉壞的（只列出，給使用者決定）"""
     import data
     import sec
-    wl = data.load_watchlist()
+    wl = data.load_watchlist(apply_auto_remove=False)     # 連上個月被移除的也重新檢查（改善了就恢復）
     cand = wl[wl["用途"] == "候選"]
     out = []
     long = sec.load()
@@ -226,9 +229,14 @@ def removals():
         import backtest
         rv = backtest.tw_revenue(datetime.now().year - 1)
         rv = rv[rv["avail"] <= pd.Timestamp.now()].sort_values("avail").groupby("code").tail(1).set_index("code")
-        for c in cand[cand["市場"] == "台股"]["代號"]:
+        tw = cand[cand["市場"] == "台股"]
+        bio_tw = set(tw.loc[tw["評分模型"] == "生技", "代號"])
+        for c in tw["代號"]:
             if c in rv.index and rv.loc[c, "yoy3"] < -0.2:
                 out.append({"市場": "台股", "代號": c, "原因": f"近 3 個月營收年減 {rv.loc[c, 'yoy3']:.0%}"})
+            opm = None if c in bio_tw else _tw_profit(c)        # 生技不套用本業虧損（藥物上市前本來就燒錢）
+            if opm is not None and opm <= 0:
+                out.append({"市場": "台股", "代號": c, "原因": f"近 4 季本業虧損（營業利益率 {opm:.1%}）"})
     except Exception as e:
         print(f"  台股營收檢查失敗：{e}")
     names = dict(zip(wl["代號"], wl["名稱"]))
@@ -250,6 +258,7 @@ EVAL_PROMPT = """你是謹慎的成長股研究員，請用繁體中文回答。
 請只輸出 JSON：
 {{"theme": "最符合的主題（上面清單之一），都不符合就寫「不屬於」",
   "subtheme": "子題，例如 散熱、先進封裝、重電",
+  "core_in_theme": true 或 false（公司「主要營收」是否真的來自上述主題；只是題材沾邊、本業是營建／食品／金融等就寫 false）,
   "business": "一句話說明公司做什麼（25 字內）",
   "moat": "競爭優勢或護城河（30 字內，沒有就說沒有）",
   "runway": "成長跑道與市場規模（30 字內）",
@@ -285,13 +294,53 @@ def ai_review(items):
     print(f"  AI 初評：{sum(1 for x in items if x.get('ai'))}/{len(items)} 檔")
 
 
+THEME_MAP = [("生技", "生技"), ("半導體", "半導體"), ("電力", "電力"), ("機器人", "機器人"), ("AI", "AI 基建")]
+
+
+def _doubt(x):
+    """自動加入前的疑慮檢查：有任何一項就不加"""
+    a = x.get("ai") or {}
+    if not x.get("主題符合"):
+        return "主題不符"
+    if a.get("core_in_theme") is False or "不符合" in (a.get("reason") or ""):
+        return "本業不在主題內"
+    if a.get("verdict") == "不建議":
+        return "AI 不建議"
+    if x["市場"] == "美股" and (x.get("自由現金流殖利率") is None or x["自由現金流殖利率"] < -0.01):
+        return "自由現金流為負"
+    if x["市場"] == "台股" and not (x.get("營業利益率") and x["營業利益率"] > 0):
+        return "本業獲利未確認"
+    return None
+
+
+def auto_add(items):
+    """每條路線取「沒有疑慮」的前 ADD_PER_ROUTE 名（依量化排序），累積寫進 auto_added.csv"""
+    cols = ["市場", "代號", "名稱", "主題", "子題", "角色", "用途", "評分模型", "理由", "保留(Y/N)", "加入日期"]
+    old = pd.read_csv(AUTO_ADD, dtype=str, encoding="utf-8-sig") if AUTO_ADD.exists() else pd.DataFrame(columns=cols)
+    new = []
+    for mk, routes in ROUTES.items():
+        for r in routes:
+            g = [x for x in items if x["市場"] == mk and x["路線"] == r and not x["已在清單"] and not _doubt(x)]
+            for x in g[:ADD_PER_ROUTE]:
+                a = x.get("ai") or {}
+                theme = next((v for k, v in THEME_MAP if k in (a.get("theme") or "")), "其他新興（雷達）")
+                new.append({"市場": mk, "代號": x["代號"], "名稱": x["名稱"], "主題": theme, "子題": a.get("subtheme", ""),
+                            "角色": "小型潛力", "用途": "候選", "評分模型": "生技" if theme == "生技" else "一般",
+                            "理由": f"每月篩選{mk}{r}（{ROUTES[mk][r]}）：{a.get('reason', '')}", "保留(Y/N)": "Y",
+                            "加入日期": datetime.now().strftime("%Y-%m-%d")})
+                x["自動加入"] = True
+    df = pd.concat([old, pd.DataFrame(new, columns=cols)], ignore_index=True).drop_duplicates("代號", keep="first")
+    df.to_csv(AUTO_ADD, index=False, encoding="utf-8-sig")
+    return new
+
+
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     if not APPROVED.exists():
         pd.DataFrame(columns=["市場", "代號", "名稱", "主題", "子題", "角色", "用途", "評分模型", "理由", "保留(Y/N)"]) \
             .to_csv(APPROVED, index=False, encoding="utf-8-sig")
     import data
-    wl_codes = set(data.load_watchlist()["代號"])
+    wl_codes = set(data.load_watchlist(apply_auto_remove=False)["代號"])
     print("每月篩選：美股…")
     us, n_us = screen_us()
     print(f"  美股：{n_us} 檔有財報資料，入選 {len(us)} 檔")
@@ -320,9 +369,17 @@ def main():
             shown += g
     items = shown
     rm = removals()
-    print(f"  建議檢視移除：{len(rm)} 檔")
+    # 自動移除：有疑慮就移出追蹤（每月重算；條件改善後自動恢復）
+    rmdf = pd.DataFrame(rm, columns=["市場", "代號", "名稱", "原因"])
+    if len(rmdf):
+        rmdf = rmdf.groupby(["市場", "代號", "名稱"], as_index=False)["原因"].agg("、".join)
+    rmdf.assign(日期=datetime.now().strftime("%Y-%m-%d")).to_csv(AUTO_RM, index=False, encoding="utf-8-sig")
+    print(f"  自動移除：{len(rmdf)} 檔")
+    added = auto_add(items)
+    print(f"  自動加入：{len(added)} 檔")
     res = {"date": datetime.now().strftime("%Y-%m-%d"), "rules": ROUTE_RULES, "routes": ROUTES,
-           "universe": {"美股": n_us, "台股": n_tw}, "items": items, "removals": rm}
+           "universe": {"美股": n_us, "台股": n_tw}, "items": items, "removals": rmdf.to_dict("records"),
+           "added": added}
     txt = json.dumps(res, ensure_ascii=False, default=float, indent=1)
     (OUT_DIR / "latest.json").write_text(txt, encoding="utf-8")
     (OUT_DIR / f"screen_{datetime.now():%Y%m}.json").write_text(txt, encoding="utf-8")

@@ -10,15 +10,22 @@ import requests
 import config
 
 
-def load_watchlist():
+def load_watchlist(apply_auto_remove=True):
     df = pd.read_excel(config.WATCHLIST, sheet_name="觀察清單", dtype=str)
-    # 每月篩選後、使用者確認要加入的股票（data/screen/approved.csv）
-    extra = config.ROOT / "data" / "screen" / "approved.csv"
-    if extra.exists():
-        add = pd.read_csv(extra, dtype=str, encoding="utf-8-sig")
-        if len(add):
-            add = add[~add["代號"].isin(df["代號"])].fillna({"保留(Y/N)": "Y", "用途": "候選", "評分模型": "一般"})
-            df = pd.concat([df, add], ignore_index=True)
+    # 加入：使用者手動加入（approved.csv）＋每月篩選自動加入（auto_added.csv）
+    sd = config.ROOT / "data" / "screen"
+    for name in ("approved.csv", "auto_added.csv"):
+        p = sd / name
+        if p.exists():
+            add = pd.read_csv(p, dtype=str, encoding="utf-8-sig")
+            if len(add):
+                add = add[~add["代號"].isin(df["代號"])].fillna({"保留(Y/N)": "Y", "用途": "候選", "評分模型": "一般"})
+                df = pd.concat([df, add[[c for c in add.columns if c in df.columns]]], ignore_index=True)
+    # 移除：每月篩選依條件自動移除的（auto_removed.csv，每月重算，條件改善就恢復）
+    rm = sd / "auto_removed.csv"
+    if apply_auto_remove and rm.exists():
+        gone = set(pd.read_csv(rm, dtype=str, encoding="utf-8-sig")["代號"])
+        df = df[~((df["用途"] == "候選") & df["代號"].isin(gone))]
     df = df[df["保留(Y/N)"].str.upper().str.strip() == "Y"].copy()
     df["代號"] = df["代號"].str.strip()
     return df.reset_index(drop=True)

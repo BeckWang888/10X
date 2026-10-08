@@ -14,7 +14,8 @@ import stages
 
 BASE_FEATS = list(stages.FEATURES) + ["rs_pct"]
 TW_FEATS = ["yoy3", "accel"]
-TARGETS = {"w12": ("r12", lambda r: r > 0), "w6": ("r6", lambda r: r > 0), "h24": ("half24", lambda r: r > 0.5)}
+TARGETS = {"w12": ("r12", lambda r: r > 0), "w6": ("r6", lambda r: r > 0), "h24": ("half24", lambda r: r > 0.5),
+           "x3": ("max24", lambda r: r >= 3)}                     # x3＝2 年內曾漲到 3 倍（爆發力）
 SPLIT = pd.Timestamp("2022-01-01")
 PRIOR = 300          # 每組樣本少時往平均拉（同一檔股票每週取樣彼此相關，有效樣本比看起來少）
 MIN_N = 500
@@ -87,6 +88,37 @@ def _logloss(p, y):
     return float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p))) if len(y) else np.nan
 
 
+STRONG_W = {"x3": 0.4, "w12": 0.3, "h24": 0.3}   # 最強分：爆發力 40%＋勝率 30%＋低腰斬 30%（2022 後驗證選出）
+
+
+def strong_score(g):
+    """g：同一市場、同一天的股票（要有 x3、w12、h24 預估）→ 0–100 的最強分"""
+    return (STRONG_W["x3"] * g["x3"].rank(pct=True) + STRONG_W["w12"] * g["w12"].rank(pct=True)
+            + STRONG_W["h24"] * g["h24"].rank(pct=True, ascending=False)) * 100
+
+
+def simulate_top3(test_df, fitted, w, market):
+    """用 2021 前建的模型，在 2022 後每週照規則挑最強 3 檔，和候選池平均比"""
+    import backtest
+    OK = {stages.CODE[stages.IGNITE], stages.CODE[stages.RUN]}
+    rows = []
+    for st in (stages.IGNITE, stages.RUN):
+        if st not in fitted:
+            continue
+        sub = test_df[(test_df["stage"] == stages.CODE[st]) & (test_df["gain_base"] < 2.5)]
+        if market == "美股" and "fcf_yield" in sub:
+            sub = sub[sub["fcf_yield"] >= -0.01]
+        p = _predict_frame(fitted[st], sub, w)
+        rows.append(sub.assign(**{k: p[k] for k in ("x3", "w12", "h24")}))
+    if not rows:
+        return {}
+    pool = pd.concat(rows)
+    pool = pool[pool["max24"].notna()]
+    pool["s"] = pool.groupby("date", group_keys=False).apply(strong_score)
+    top = pool.sort_values("s", ascending=False).groupby("date").head(3)
+    return {"pool": backtest.stat(pool), "top": backtest.stat(top)}
+
+
 def train(df, market):
     feats = BASE_FEATS + (TW_FEATS if market == "台股" else [f for f in sec.FUND_FEATURES if f in df])
     names = np.array(stages.ORDER, dtype=object)[df["stage"].to_numpy()]
@@ -116,7 +148,7 @@ def train(df, market):
         p = _predict_frame(mdl, sub, best_w)
         y = _targets(sub)
         v = {}
-        for k in ("w12", "w6", "h24"):
+        for k in ("w12", "w6", "h24", "x3"):
             yy, pp = y[k].to_numpy(), p[k]
             m = ~np.isnan(yy)
             if m.sum() < 200:
@@ -125,6 +157,8 @@ def train(df, market):
             v[k] = {"top": float(yy[m][pp[m] >= q80].mean()), "bottom": float(yy[m][pp[m] <= q20].mean()),
                     "all": float(yy[m].mean()), "n": int(m.sum())}
         out["val"][st] = v
+    # 1b) 最強名單規則的事後驗證：2022 年後每週挑最強 3 檔（發動期＋主升段前中段、沒有疑慮）
+    out["top3"] = simulate_top3(test_df, fitted, best_w, market)
     # 2) 正式模型：用全部資料
     for st in stages.ORDER:
         if (names == st).sum() >= MIN_N:
@@ -205,7 +239,7 @@ CATEGORIES = [  # （分類名稱, 階段, 排序用的勝率）
 def apply(cand, techs, mrevs, bt, us_fund=None):
     """在 cand 加上：預估勝率（12/6 個月）、預估腰斬、階段平均、理由；並算精選分。"""
     cols = {k: [] for k in ("預估勝率", "預估6月勝率", "預估腰斬", "階段勝率", "階段6月勝率", "階段腰斬", "加分理由", "扣分理由",
-                            "勝率模型有效", "6月模型有效")}
+                            "勝率模型有效", "6月模型有效", "預估3倍", "階段3倍")}
     for _, r in cand.iterrows():
         m = bt.get("markets", {}).get(r["市場"], {})
         mdl = (m.get("model") or {}).get("stages", {}).get(r["階段"])
@@ -225,7 +259,8 @@ def apply(cand, techs, mrevs, bt, us_fund=None):
                      ("預估6月勝率", est["w6"] if ok6 else mdl["base"]["w6"]), ("預估腰斬", est["h24"]),
                      ("階段勝率", mdl["base"]["w12"]), ("階段6月勝率", mdl["base"]["w6"]), ("階段腰斬", mdl["base"]["h24"]),
                      ("加分理由", why(pos) if ok12 else ""), ("扣分理由", why(neg) if ok12 else ""),
-                     ("勝率模型有效", ok12), ("6月模型有效", ok6)):
+                     ("勝率模型有效", ok12), ("6月模型有效", ok6),
+                     ("預估3倍", est.get("x3")), ("階段3倍", mdl["base"].get("x3"))):
             cols[k].append(v)
     for k, v in cols.items():
         cand[k] = v
@@ -283,4 +318,32 @@ def streaks(history_dir, today_sel):
                     else:
                         break
                 out.setdefault(c, {})[cat] = k
+    return out
+
+
+def strongest(cand, alert=None, ai=None, n=3):
+    """🏆 最強名單：全部候選裡，條件最強的前 n 名（每個市場）。全部用條件，不靠感覺：
+      必要條件（有任何疑慮就排除）：
+        - 階段＝🔥 發動期，或 🚀 主升段前段／中段（後段、過熱、轉弱、下跌都不要）
+        - 沒有紅旗（美股自由現金流為負、生技現金不夠燒等）
+        - 今天沒有急跌警報、AI 新聞判斷不是「偏空」
+        - 模型要有 2 年 3 倍、勝率、腰斬的預估
+      排序：最強分＝爆發力（2 年漲 3 倍機率）40%＋12 個月勝率 30%＋低腰斬 30%（同市場排百分位）
+      → 2022 年後每週照這規則挑 3 檔的實際表現見 model.top3"""
+    bad = set(alert["代號"]) if alert is not None and len(alert) else set()
+    ai = ai or {}
+    ok = (cand["階段"].isin([stages.IGNITE, stages.RUN]) & (cand["細分"].fillna("") != "後段")
+          & (cand["紅旗"].fillna("") == "") & ~cand["代號"].isin(bad)
+          & ~cand["代號"].map(lambda c: (ai.get(c) or {}).get("sentiment") == "偏空")
+          & cand["預估3倍"].notna() & cand["預估勝率"].notna() & cand["預估腰斬"].notna())
+    out = {}
+    cand["最強分"] = np.nan
+    for mk in ("台股", "美股"):
+        g = cand[ok & (cand["市場"] == mk)].rename(columns={"預估3倍": "x3", "預估勝率": "w12", "預估腰斬": "h24"})
+        if g.empty:
+            out[mk] = []
+            continue
+        sc = strong_score(g).round(0)
+        cand.loc[sc.index, "最強分"] = sc
+        out[mk] = sc.sort_values(ascending=False).head(n).index.map(lambda i: cand.at[i, "代號"]).tolist()
     return out

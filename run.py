@@ -111,9 +111,8 @@ def main():
         alert["自由現金流殖利率"] = alert["代號"].map(fcf)
         print(f"  急跌警報：{len(alert)} 檔")
 
-    # 霸榜：和過去每天的精選比，連續上榜幾天
-    config.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-    streak = picks.streaks(config.HISTORY_DIR, sel) if not demo else {}
+    # 🏆 最強名單（先不看 AI，讓這幾檔也進 AI 分析；分析完再用 AI 結果最後篩一次）
+    sel["🏆 最強"] = picks.strongest(cand, alert)
 
     # AI 新聞分析：只分析今日精選（需要 GEMINI_API_KEY）
     ai = {}
@@ -136,6 +135,12 @@ def main():
         seen = set()
         rows = [r for r in rows if not (r["代號"] in seen or seen.add(r["代號"]))]
         ai = news.analyze_many(rows)
+        sel["🏆 最強"] = picks.strongest(cand, alert, ai)
+        print(f"  🏆 最強名單：{sel['🏆 最強']}")
+
+    # 霸榜：和過去每天的精選比，連續上榜幾天
+    config.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    streak = picks.streaks(config.HISTORY_DIR, sel) if not demo else {}
 
     # 存歷史紀錄（之後回測校準機率要用）。只在 GitHub Actions 上存，本機測試不寫，避免和機器人的紀錄衝突
     import os

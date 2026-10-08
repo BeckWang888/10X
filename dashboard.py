@@ -470,7 +470,7 @@ const linkHtml=(code,m)=>`<div class="links">🔗 ${links(code,m).map(([t,u])=>`
 /* ---------- 每月自動篩選 ---------- */
 const S=D.screen||{}, SI=S.items||[], openScr=new Set();
 function scrItem(x){const a=x.ai||{};
- const nums=x.市場=="美股"?`市值 ${x["市值(億美元)"]} 億美元・FCF 殖利率 ${pp(x.自由現金流殖利率,1)}・帳面市值比 ${x.帳面市值比?.toFixed(2)}・營收年增 ${pc(x.營收年增)}`
+ const nums=x.市場=="美股"?`市值 ${x["市值(億美元)"]} 億美元・FCF 殖利率 ${x.自由現金流殖利率<-0.01?`<span class="flag">${pp(x.自由現金流殖利率,1)}（為負）</span>`:pp(x.自由現金流殖利率,1)}・帳面市值比 ${x.帳面市值比?.toFixed(2)}・營收年增 ${pc(x.營收年增)}`
   :`營收年增 ${pc(x.營收年增)}（加速 ${pc(x.營收加速)}）・${x.未確認獲利?'<span class="flag">未確認獲利</span>':"營業利益率 "+pp(x.營業利益率,1)}${x.股價淨值比?"・股價淨值比 "+x.股價淨值比.toFixed(1):""}`;
  return `<div class="sc-it" data-c="${x.代號}">${a.verdict?`<span class="vd ${a.verdict}">${a.verdict}</span>`:x.已在清單?'<span class="vd">已在清單</span>':""}<span class="name">${x.名稱}</span><span class="code">${x.代號}・${x.市場}</span>　${num(x.股價)}
   <div class="small">${a.theme&&a.theme!="不屬於"?`<b>${a.theme}</b>／${a.subtheme||""}・`:""}${nums}・離高點 ${pc(x.離一年高點)}・${x.階段||""}</div>
@@ -513,7 +513,7 @@ function pickItem(r,i,c){
   <div><span class="name">${r.名稱}</span>${badge(r.代號,c.name)}<span class="code">${r.代號}・${r.市場}</span>　<b>${num(r.股價)}</b> ${pc(r.日漲跌,1)}<br>
   <span class="small">${r.細分?r.細分+"・":""}${r[okKey]?`${isHot?"6 個月":"12 個月"}勝率 <b class="${better>0?'up':''}">${pp(r[wk])}</b>（階段 ${pp(r[sk])}）`:`勝率 階段平均 ${pp(r[sk])}`}・腰斬 <b>${pp(r.預估腰斬)}</b>・總分 ${r.總分}</span></div>
   <div class="sc">${r.精選分}<div class="small" style="font-weight:400">精選分</div></div>
-  <div class="why">${aiLine(r.代號)?aiLine(r.代號)+"<br>":""}${r.加分理由?"✔ "+r.加分理由:""}${r.扣分理由?"<br>✘ "+r.扣分理由:""}<br>出場線 ${r.出場線?num(r.出場線)+"（距離 "+pp(r.股價/r.出場線-1)+"）":"–"}</div></div>`}
+  <div class="why">${aiLine(r.代號)?aiLine(r.代號)+"<br>":""}${r.提醒?"ⓘ "+r.提醒+"<br>":""}${r.加分理由?"✔ "+r.加分理由:""}${r.扣分理由?"<br>✘ "+r.扣分理由:""}<br>出場線 ${r.出場線?num(r.出場線)+"（距離 "+pp(r.股價/r.出場線-1)+"）":"–"}</div></div>`}
 function surgeItem(r,i){
  const st=((D.surgeStats[r.市場]||{})["暴衝|"+r.階段])||{};
  return `<div class="pi" data-c="${r.代號}"><span class="rk">${i+1}</span>
@@ -565,7 +565,7 @@ function draw(){
   const wd=r.預估勝率!=null&&r.階段勝率!=null?r.預估勝率-r.階段勝率:null;
   const hd=r.預估腰斬!=null&&r.階段腰斬!=null?r.預估腰斬-r.階段腰斬:null;
   return `<tr data-c="${r.代號}">
- <td class="l">${AL[r.代號]?'<span title="'+AL[r.代號].警報+'">🚨</span>':''}<span class="name">${r.名稱}</span><span class="code">${r.代號}</span><br><span class="small">${r.市場}・${r.子題}</span>${r.產業已發動?' <span class="hot small">●發動</span>':''}${r.紅旗?`<br><span class="flag">⚑ ${r.紅旗}</span>`:""}</td>
+ <td class="l">${AL[r.代號]?'<span title="'+AL[r.代號].警報+'">🚨</span>':''}<span class="name">${r.名稱}</span><span class="code">${r.代號}</span><br><span class="small">${r.市場}・${r.子題}</span>${r.產業已發動?' <span class="hot small">●發動</span>':''}${r.紅旗?`<br><span class="flag">⚑ ${r.紅旗}</span>`:""}${r.提醒?`<br><span class="small">ⓘ ${r.提醒}</span>`:""}</td>
  <td><b>${num(r.股價)}</b><br>${pc(r.日漲跌,1)} <span class="small ${stale?'stale':''}">${r.資料日期.slice(5)}</span></td>
  <td class="l">${tag(r.階段)}${r.細分?` <b>${r.細分}</b>`:""}<br><span class="small">${r.週期位置||""}</span></td>
  <td class="l wrapc">${r.操作}</td>
@@ -685,7 +685,8 @@ async function openDlg(code){
    <span>營收加速（比前期）</span><b>${pc(r.營收加速)}</b>
    <span>相對強度（全市場）</span><b>${r.相對強度||"–"}</b><span>6 個月漲幅</span><b>${pc(r["6月漲幅"])}</b>
    <span>6 個月贏大盤</span><b>${pc(r["6月超額"])}</b><span>離一年高點</span><b>${pc(r.離高點)}</b>
-   <span>市值</span><b>${r["市值(億美元)"]??"–"} 億美元</b><span>紅旗</span><b class="flag">${r.紅旗||"無"}</b></div></div>`:"";
+   <span>市值</span><b>${r["市值(億美元)"]??"–"} 億美元</b><span>紅旗</span><b class="flag">${r.紅旗||"無"}</b>
+   <span>提醒</span><b>${r.提醒||"無"}</b></div></div>`:"";
  charts.forEach(c=>c.remove());charts=[];cdata=null;
  document.getElementById("lg1").textContent="載入中…";
  try{const resp=await fetch(`charts/${encodeURIComponent(code)}.json`);if(!resp.ok)throw 0;cdata=await resp.json()}

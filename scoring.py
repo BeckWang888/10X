@@ -134,7 +134,7 @@ def score_one(row, f, t, mrev, theme_hot):
         size = 0.1
 
     # ① 底子
-    flags = []
+    flags, notes = [], []      # 紅旗＝排除出精選；提醒＝只標示
     if model == "生技":
         cash, ocf = f.get("totalCash"), f.get("operatingCashflow")
         if cash and ocf is not None and ocf < 0:
@@ -150,12 +150,16 @@ def score_one(row, f, t, mrev, theme_hot):
         fcf_y = (f["freeCashflow"] / f["marketCap"]) if f.get("freeCashflow") and f.get("marketCap") else None
         b2m = (1 / f["priceToBook"]) if f.get("priceToBook") and f["priceToBook"] > 0 else None
         ag, eg = f.get("asset_growth"), f.get("ebitda_growth")
+        # 使用者決定（2026-10）：資產擴張快不一定是壞事（成長型公司也會擴張）→ 只提醒、不扣分、不排除
         if ag is not None and eg is not None:
-            sane = 4.0 if ag <= eg else 0.0
+            sane = 4.0
             if ag > eg + 0.15:
-                flags.append("資產擴張遠快於獲利")
+                notes.append("資產擴張快於獲利")
         else:
             sane = 1.6
+        # 使用者決定（2026-10）：自由現金流為負（殖利率 < −1%）＝紅旗（生技不適用，生技看現金能燒幾年）
+        if fcf_y is not None and fcf_y < -0.01:
+            flags.append(f"自由現金流為負（{fcf_y:.1%}）")
         p1 = (6 * size + pts(fcf_y, 0, 0.08, 6) + pts(b2m, 0.05, 0.6, 4)
               + pts(f.get("ebitdaMargins"), 0, 0.30, 5) + sane)
 
@@ -194,7 +198,7 @@ def score_one(row, f, t, mrev, theme_hot):
         "營收YoY": rev_yoy, "營收加速": accel_v,
         "①底子": round(p1, 1), "②催化劑": round(p2, 1), "③資金技術": round(p3, 1), "④位置": round(p4, 1),
         "總分": round(total, 1), "⚡爆發力": round(burst), "🏔️長跑力": round(longrun),
-        "紅旗": "、".join(flags),
+        "紅旗": "、".join(flags), "提醒": "、".join(notes),
         "6月超額": t["rs_6m"], "6月漲幅": t["ret_6m"], "離高點": t["from_high"], "50MA乖離": ext,
     }
 

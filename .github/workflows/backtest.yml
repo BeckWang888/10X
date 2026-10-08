@@ -1,0 +1,39 @@
+name: 每月回測（更新歷史勝率）
+
+on:
+  schedule:
+    - cron: "0 20 1 * *"     # 每月 2 日台灣時間清晨 4:00
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tracker
+  cancel-in-progress: false
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: 回測（全市場 10 年）
+        run: python backtest.py
+
+      - name: 把回測結果存回 repo
+        run: |
+          git config user.name "tracker-bot"
+          git config user.email "tracker-bot@users.noreply.github.com"
+          git add data/backtest
+          git diff --cached --quiet || git commit -m "回測更新 $(date +%F)"
+          git pull --rebase
+          git push

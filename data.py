@@ -38,16 +38,17 @@ def yf_symbol(market, code):
 
 
 # ---------- 股價 ----------
-def fetch_prices(symbols, period="2y"):
-    """回傳 {symbol: DataFrame(Close, Volume)}"""
+def fetch_prices(symbols, period="5y"):
+    """回傳 {symbol: DataFrame(Open, High, Low, Close, Volume)}。抓 5 年才判斷得出多頭從哪天開始。"""
     import yfinance as yf
     out = {}
     raw = yf.download(symbols, period=period, interval="1d", auto_adjust=True,
                       group_by="ticker", threads=True, progress=False)
+    multi = isinstance(raw.columns, pd.MultiIndex)
     for s in symbols:
         try:
-            d = raw[s] if len(symbols) > 1 else raw
-            d = d[["Close", "Volume"]].dropna()
+            d = raw[s] if multi else raw
+            d = d[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"])
             if len(d) > 60:
                 out[s] = d
         except KeyError:

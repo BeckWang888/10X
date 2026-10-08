@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 import config
+import stages
 
 
 def lin(x, lo, hi):
@@ -29,56 +30,78 @@ def pts(x, lo, hi, weight, missing=0.4):
 
 # ---------- 技術指標 ----------
 def technicals(px, bench):
+    """最新一天的技術面。階段判斷交給 stages.py（和回測同一套規則）。"""
+    s = stages.compute(px)
+    last = s.iloc[-1]
     c, v = px["Close"], px["Volume"]
-    last = float(c.iloc[-1])
-    ma50, ma150, ma200 = (float(c.rolling(n).mean().iloc[-1]) for n in (50, 150, 200))
-    ma200_prev = float(c.rolling(200).mean().iloc[-21]) if len(c) > 221 else np.nan
-    w = c.iloc[-252:]
-    hi52, lo52 = float(w.max()), float(w.min())
+    st, sub, pos = stages.describe(last)
     t = {
-        "close": last,
-        "ret_6m": float(c.iloc[-1] / c.iloc[-126] - 1) if len(c) > 126 else np.nan,
-        "ret_12m": float(c.iloc[-1] / c.iloc[-252] - 1) if len(c) > 252 else np.nan,
-        "ext50": last / ma50 - 1,
-        "from_high": last / hi52 - 1,          # 0 = 在高點，-0.3 = 離高點 30%
-        "above_low": last / lo52 - 1,          # 離 52 週低點漲了多少
-        "trend_ok": bool(last > ma50 > ma150 > ma200 and ma200 > ma200_prev),
-        "above_200": bool(last > ma200),
+        "series": s,
+        "close": float(last["close"]), "date": c.index[-1].strftime("%Y-%m-%d"),
+        "chg1d": float(c.iloc[-1] / c.iloc[-2] - 1) if len(c) > 1 else None,
+        "ret_6m": float(c.iloc[-1] / c.iloc[-127] - 1) if len(c) > 127 else np.nan,
+        "ext50": float(last["ext50"]), "from_high": float(last["from_high"]), "rsi": float(last["rsi"]),
+        "ma50": float(last["ma50"]), "ma150": float(last["ma150"]), "low120": float(last["low120"]),
+        "trend_ok": st in (stages.IGNITE, stages.RUN, stages.HOT),
         "vol_surge": float(v.iloc[-20:].mean() / max(v.iloc[-120:].mean(), 1)),
+        "stage": st, "phase": sub, "pos": pos,
+        "start_date": last["start_date"].strftime("%Y-%m-%d") if pd.notna(last["start_date"]) else None,
+        "start_px": float(last["start_px"]) if pd.notna(last["start_px"]) else None,
     }
     # 近 20 個交易日內是否創 52 週新高（突破）
     prior_hi = float(c.iloc[-252:-20].max()) if len(c) > 272 else float(c.iloc[:-20].max())
     t["breakout"] = bool(c.iloc[-20:].max() >= prior_hi)
-    # RSI14
-    d = c.diff()
-    up, dn = d.clip(lower=0).rolling(14).mean(), (-d.clip(upper=0)).rolling(14).mean()
-    t["rsi"] = float(100 - 100 / (1 + up.iloc[-1] / max(dn.iloc[-1], 1e-9)))
     # 相對大盤的 6 個月超額報酬
-    if bench is not None and len(bench) > 126:
+    if bench is not None and len(bench) > 127:
         b = bench["Close"]
-        t["rs_6m"] = t["ret_6m"] - float(b.iloc[-1] / b.iloc[-126] - 1)
+        t["rs_6m"] = t["ret_6m"] - float(b.iloc[-1] / b.iloc[-127] - 1)
     else:
         t["rs_6m"] = t["ret_6m"]
     return t
 
 
-# ---------- 階段判斷 ----------
-def stage(t, accel):
-    """accel: 營收是否在加速（True/False/None）"""
-    if t["ext50"] > 0.40 or t["rsi"] > 85:
-        return "⚠️ 過熱"
-    if t["trend_ok"] and (t["ext50"] > 0.25 or t["above_low"] > 1.5):
-        return "🚀 主升段"
-    if t["trend_ok"] and t["from_high"] > -0.15 and (t["breakout"] or t["vol_surge"] > 1.3):
-        return "🔥 發動期"
-    if (not t["above_200"] or t["above_low"] < 0.35) and accel:
-        return "🌱 潛伏期"
-    if t["trend_ok"]:
-        return "📈 趨勢中"
-    return "· 無訊號"
+# ---------- 進出場參考 ----------
+ACTION = {
+    stages.SEED: "觀察；營收加速才小量試單",
+    stages.IGNITE: "進場區：可分批買進",
+    stages.RUN: "續抱；新進場等回檔近 50 日線",
+    stages.HOT: "不追；持有者分批獲利、跌破 50 日線出清",
+    stages.WEAK: "減碼／出場",
+    stages.DOWN: "避開，不攤平",
+    stages.RANGE: "觀望",
+}
 
 
-IGNITED = {"🔥 發動期", "🚀 主升段", "⚠️ 過熱", "📈 趨勢中"}
+RUN_ACTION = {
+    "前段": "續抱；回檔近 50 日線可加碼",
+    "中段": "續抱，不追高；守 50 日線",
+    "後段": "不加碼；跌破 50 日線先賣一半",
+}
+
+
+def action(t):
+    """建議動作。主升段依前/中/後段分開（回測：後段之後一年中位數為負、腰斬機率高）"""
+    if t["stage"] == stages.RUN and t["phase"] in RUN_ACTION:
+        return RUN_ACTION[t["phase"]]
+    return ACTION.get(t["stage"], "")
+
+
+def exit_lines(t):
+    """回傳（減碼線, 出場線）。多頭中：跌破 50 日線減碼、跌破 150 日線出場；潛伏期：跌破半年低點停損。"""
+    if t["stage"] in (stages.IGNITE, stages.RUN, stages.HOT):
+        return t["ma50"], t["ma150"]
+    if t["stage"] == stages.SEED:
+        return None, t["low120"] * 0.97
+    return None, None
+
+
+def rev_tier(yoy3, accel):
+    """和回測同一個定義：近 3 月年增 >20% 且加速＝加速；年增 <0＝衰退"""
+    if yoy3 is None:
+        return ""
+    if yoy3 > 0.2 and accel is not None and accel > 0:
+        return "加速"
+    return "衰退" if yoy3 < 0 else "一般"
 
 
 # ---------- 主評分 ----------
@@ -96,7 +119,6 @@ def score_one(row, f, t, mrev, theme_hot):
         rev_yoy = f.get("rev_yoy_q0", f.get("revenueGrowth"))
         rev_prev = f.get("rev_yoy_q1")
     accel_v = (rev_yoy - rev_prev) if (rev_yoy is not None and rev_prev is not None) else None
-    accel = None if accel_v is None else accel_v > 0.02
 
     # 市值越小分越高
     if mcap_b is None:
@@ -144,12 +166,14 @@ def score_one(row, f, t, mrev, theme_hot):
     p3 = (8 * t.get("rs_pct", 0.5) + (7 if t["trend_ok"] else 0)
           + pts(t["vol_surge"], 1.0, 2.0, 4, missing=0) + (6 if t["breakout"] else 0))
 
-    # ④ 進場位置：乖離小、離高點不遠最好；低檔但底子好也給分（潛伏期）
+    # ④ 進場位置：乖離小、離高點不遠最好；潛伏期底子好也給分
     ext = t["ext50"]
     p4_ext = 15 if ext <= 0.10 else (15 * (1 - lin(ext, 0.10, 0.40)))
     p4_hi = 5 * (1 - lin(-t["from_high"], 0.15, 0.50))
-    p4_base = 5 if (t["above_low"] < 0.35 and p1 >= 15) else 0
+    p4_base = 5 if (t["stage"] == stages.SEED and p1 >= 15) else 0
     p4 = min(25, p4_ext + p4_hi + p4_base)
+    # 回測：主升段後段之後一年中位數為負、腰斬機率高 → 進場位置打折
+    p4 *= {"後段": 0.5, "中段": 0.85}.get(t["phase"], 1.0)
 
     total = p1 + p2 + p3 + p4
     burst = (p2 + p3) * 2
@@ -158,17 +182,24 @@ def score_one(row, f, t, mrev, theme_hot):
                + 25 * (lin(f.get("rev_cagr3"), 0, 0.30) or 0.3)
                + 15 * size)
 
+    cut, stop = exit_lines(t)
     return {
+        "股價": t["close"], "日漲跌": t["chg1d"], "資料日期": t["date"],
+        "階段": t["stage"], "細分": t["phase"], "週期位置": t["pos"], "起漲日": t["start_date"],
+        "操作": action(t), "減碼線": cut, "出場線": stop,
+        "營收狀態": rev_tier(mrev.get("mrev_yoy3"), accel_v) if market == "台股" else "",
+        "相對強度": t.get("rs_tier", ""), "RSI": t["rsi"],
         "市值(億美元)": round(mcap_b * 10, 1) if mcap_b else None,
         "營收YoY": rev_yoy, "營收加速": accel_v,
         "①底子": round(p1, 1), "②催化劑": round(p2, 1), "③資金技術": round(p3, 1), "④位置": round(p4, 1),
         "總分": round(total, 1), "⚡爆發力": round(burst), "🏔️長跑力": round(longrun),
-        "階段": stage(t, accel), "紅旗": "、".join(flags),
-        "6月超額": t["rs_6m"], "離高點": t["from_high"], "50MA乖離": ext,
+        "紅旗": "、".join(flags),
+        "6月超額": t["rs_6m"], "6月漲幅": t["ret_6m"], "離高點": t["from_high"], "50MA乖離": ext,
     }
 
 
-def score_all(wl, prices, funds, mrevs, sym_of):
+def score_all(wl, prices, funds, mrevs, sym_of, rs_cut=None):
+    """rs_cut: {市場: (後20%門檻, 前20%門檻)}，來自回測時的全市場 6 個月漲幅分布"""
     # 先算技術面
     techs = {}
     for _, r in wl.iterrows():
@@ -176,12 +207,16 @@ def score_all(wl, prices, funds, mrevs, sym_of):
         if s in prices:
             bench = prices.get(config.BENCHMARK[r["市場"]])
             techs[r["代號"]] = technicals(prices[s], bench)
-    # RS 百分位（在同市場的候選池裡排名）
+    # RS 百分位（在同市場的觀察清單裡排名，給評分用）；強/中/弱 分級用全市場門檻（和回測一致）
     for mkt in ("美股", "台股"):
         codes = [c for c in wl[wl["市場"] == mkt]["代號"] if c in techs]
-        vals = pd.Series({c: techs[c]["rs_6m"] for c in codes}).rank(pct=True)
+        vals = pd.Series({c: techs[c]["rs_6m"] for c in codes}, dtype=float).rank(pct=True)
         for c, p in vals.items():
             techs[c]["rs_pct"] = float(p) if not np.isnan(p) else 0.5
+        lo, hi = (rs_cut or {}).get(mkt) or (None, None)
+        for c in codes:
+            r6 = techs[c]["ret_6m"]
+            techs[c]["rs_tier"] = "" if (hi is None or np.isnan(r6)) else ("強" if r6 >= hi else "弱" if r6 <= lo else "中")
 
     # 指標股是否發動 → 主題/子題熱度
     hot_sub, hot_theme = set(), set()
@@ -190,10 +225,10 @@ def score_all(wl, prices, funds, mrevs, sym_of):
         t = techs.get(r["代號"])
         if not t:
             continue
-        st = stage(t, None)
         ind_rows.append({"市場": r["市場"], "代號": r["代號"], "名稱": r["名稱"], "主題": r["主題"],
-                         "子題": r["子題"], "階段": st, "6月超額": t["rs_6m"], "離高點": t["from_high"]})
-        if st in IGNITED and t["rs_6m"] > 0:
+                         "子題": r["子題"], "階段": t["stage"], "細分": t["phase"], "股價": t["close"],
+                         "日漲跌": t["chg1d"], "6月超額": t["rs_6m"], "離高點": t["from_high"]})
+        if t["trend_ok"] and t["rs_6m"] > 0:
             hot_sub.add(r["子題"])
             hot_theme.add(r["主題"])
 
@@ -207,4 +242,4 @@ def score_all(wl, prices, funds, mrevs, sym_of):
         rows.append({"市場": r["市場"], "代號": r["代號"], "名稱": r["名稱"], "主題": r["主題"],
                      "子題": r["子題"], "角色": r["角色"], "產業已發動": "是" if hot else "", **res})
     cand = pd.DataFrame(rows).sort_values("總分", ascending=False).reset_index(drop=True)
-    return cand, pd.DataFrame(ind_rows), sorted(hot_sub), sorted(hot_theme)
+    return cand, pd.DataFrame(ind_rows), sorted(hot_sub), techs

@@ -3,6 +3,7 @@
   python run.py          抓真實資料、評分、產生 dashboard.html
   python run.py --demo   用模擬資料跑一次（不用網路，確認環境 OK）
 """
+import json
 import sys
 from datetime import datetime
 
@@ -18,7 +19,7 @@ from data import load_watchlist
 def demo_data(wl):
     """隨機產生股價與基本面，只為了測試流程。"""
     rng = np.random.default_rng(7)
-    idx = pd.bdate_range(end=datetime.now(), periods=500)
+    idx = pd.bdate_range(end=datetime.now(), periods=900)
     prices, funds, mrevs, sym_of = {}, {}, {}, {}
     for _, r in wl.iterrows():
         s = r["代號"]
@@ -27,7 +28,10 @@ def demo_data(wl):
         kink = rng.integers(250, 480)
         rets = rng.normal(drift, 0.025, len(idx))
         rets[kink:] += rng.normal(0.002, 0.003)
-        prices[s] = pd.DataFrame({"Close": 50 * np.exp(np.cumsum(rets)),
+        close = 50 * np.exp(np.cumsum(rets))
+        opn = close * np.exp(rng.normal(0, 0.01, len(idx)))
+        prices[s] = pd.DataFrame({"Open": opn, "High": np.maximum(opn, close) * 1.01,
+                                  "Low": np.minimum(opn, close) * 0.99, "Close": close,
                                   "Volume": rng.lognormal(13, 0.4, len(idx))}, index=idx)
         mc = float(rng.lognormal(23, 1.4)) * (32 if r["市場"] == "台股" else 1)
         funds[s] = {"marketCap": mc, "freeCashflow": mc * rng.normal(0.03, 0.04),
@@ -40,8 +44,8 @@ def demo_data(wl):
                     "operatingCashflow": mc * rng.normal(0.01, 0.05)}
     for b in config.BENCHMARK.values():
         sym_of[b] = b
-        prices[b] = pd.DataFrame({"Close": 100 * np.exp(np.cumsum(rng.normal(0.0004, 0.01, len(idx)))),
-                                  "Volume": np.ones(len(idx))}, index=idx)
+        bc = 100 * np.exp(np.cumsum(rng.normal(0.0004, 0.01, len(idx))))
+        prices[b] = pd.DataFrame({"Open": bc, "High": bc, "Low": bc, "Close": bc, "Volume": np.ones(len(idx))}, index=idx)
     return prices, funds, mrevs, sym_of
 
 
@@ -68,20 +72,27 @@ def real_data(wl):
     return prices, funds, mrevs, sym_of
 
 
+def load_backtest():
+    p = config.ROOT / "data" / "backtest" / "stage_stats.json"
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+
+
 def main():
     demo = "--demo" in sys.argv
     wl = load_watchlist()
     prices, funds, mrevs, sym_of = (demo_data if demo else real_data)(wl)
-    cand, ind, hot_sub, _ = scoring.score_all(wl, prices, funds, mrevs, sym_of)
+    bt = load_backtest()
+    rs_cut = {m: v.get("rs_cut") for m, v in bt.get("markets", {}).items()}
+    cand, ind, hot_sub, techs = scoring.score_all(wl, prices, funds, mrevs, sym_of, rs_cut)
 
     # 存歷史紀錄（之後回測校準機率要用）
     if not demo:
         config.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
         cand.to_csv(config.HISTORY_DIR / f"scores_{datetime.now():%Y%m%d}.csv", index=False, encoding="utf-8-sig")
 
-    out = dashboard.build(cand, ind, hot_sub, demo=demo)
+    out = dashboard.build(cand, ind, hot_sub, techs, prices, sym_of, bt, demo=demo)
     print(f"\n完成，共評分 {len(cand)} 檔。前 10 名：")
-    print(cand[["代號", "名稱", "階段", "總分", "⚡爆發力", "🏔️長跑力"]].head(10).to_string(index=False))
+    print(cand[["代號", "名稱", "股價", "階段", "細分", "總分"]].head(10).to_string(index=False))
     print(f"\n儀表板：{out}")
 
 

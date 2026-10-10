@@ -115,6 +115,10 @@ def stats(ret, pos=None):
     return out
 
 
+def fmt(v):
+    return "—" if v is None or (isinstance(v, float) and np.isnan(v)) else f"{v}%"
+
+
 results = {}
 curves = {}
 md = ["# LRS 回測結果（自動產生）", "",
@@ -178,7 +182,7 @@ for name, u in UNDER.items():
             if s is None:
                 continue
             rows.append(dict(strategy=sname, **s))
-            md.append(f"| {sname} | {s['start']}~{s['end']} | {s['cagr']}% | {s['maxdd']}% | {s['worst12m']}% | {s['vol']}% | "
+            md.append(f"| {sname} | {s['start']}~{s['end']} | {s['cagr']}% | {s['maxdd']}% | {fmt(s['worst12m'])} | {s['vol']}% | "
                       f"{s['sharpe']} | {s['multiple']}x | {s.get('time_in', 100):.0f} | {s.get('switches_per_year', 0)} |")
         md.append("")
         results[name]["periods"][pname] = rows
@@ -217,8 +221,10 @@ try:
     import matplotlib.pyplot as plt
     for name, cs in curves.items():
         fig, ax = plt.subplots(2, 1, figsize=(12, 8), sharex=True, gridspec_kw=dict(height_ratios=[2, 1]))
+        en = {"1x長抱": "Index buy&hold (1x)", "3x長抱": "3x buy&hold", "LRS 3x": "LRS 3x",
+              f"LRS 3x 緩衝{int(BAND*100)}%": f"LRS 3x, {int(BAND*100)}% band"}
         for k, eq in cs.items():
-            ax[0].plot(eq.index, eq.values, label=k, lw=1.2)
+            ax[0].plot(eq.index, eq.values, label=en.get(k, k), lw=1.2)
             ax[1].plot(eq.index, (eq / eq.cummax() - 1).values * 100, lw=0.9)
         ax[0].set_yscale("log"); ax[0].legend(); ax[0].set_title(f"{name}: equity (log)")
         ax[1].set_ylabel("drawdown %")

@@ -3,7 +3,7 @@ name: LRS 回測（TQQQ / SOXL）
 on:
   push:
     branches: ["claude/**"]
-    paths: ["lrs/backtest_lrs.py", ".github/workflows/lrs-backtest.yml"]
+    paths: ["lrs/backtest_lrs.py", "lrs/fetch_prices.py", ".github/workflows/lrs-backtest.yml"]
   workflow_dispatch:
 
 permissions:
@@ -22,6 +22,9 @@ jobs:
           cache: pip
 
       - run: pip install -r requirements.txt matplotlib
+
+      - name: 抓長期研究用價格
+        run: python lrs/fetch_prices.py
 
       - name: 回測
         run: python lrs/backtest_lrs.py

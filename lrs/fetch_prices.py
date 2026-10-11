@@ -14,6 +14,9 @@ TICKERS = [
     "VUSTX", "VFITX", "TLT", "IEF", "SHY", "GLD", "GC=F", "^IRX",
     # 因子（小型價值、動能、品質）與全球
     "DFSVX", "VISVX", "MTUM", "QUAL", "VEU", "VGTSX",
+    # 台股：加權指數、0050、006208、正2，以及全球 VT、2 倍 VT（WLDU）、匯率、黃金
+    "^TWII", "0050.TW", "006208.TW", "00631L.TW", "00675L.TW", "00663L.TW", "00685L.TW",
+    "VT", "WLDU", "TWD=X", "IAU",
 ]
 
 d = yf.download(TICKERS, start="1970-01-01", auto_adjust=True, progress=False)["Close"]

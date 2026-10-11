@@ -19,6 +19,8 @@ TICKERS = [
     "VT", "WLDU", "TWD=X", "IAU",
     # 黃金槓桿：美股 UGL（2 倍）、台股 00708L（黃金正2）、00635U（黃金 1 倍期貨）
     "UGL", "00708L.TW", "00635U.TW",
+    # 中國、香港、日本、新興市場（單一國家風險比較）
+    "000001.SS", "^HSI", "FXI", "MCHI", "ASHR", "^N225", "EWJ", "VWO", "VEIEX", "EEM", "INDA",
 ]
 
 d = yf.download(TICKERS, start="1970-01-01", auto_adjust=True, progress=False)["Close"]

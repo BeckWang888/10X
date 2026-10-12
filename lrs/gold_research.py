@@ -35,12 +35,18 @@ def lev(r, k, rf, fee, spread=0.0):
 
 
 def in_twd(r):
-    f = fxr.reindex(r.index); m = f.notna()
-    return (1 + r[m]) * (1 + f[m]) - 1
+    """美元報酬換成台幣報酬：淨值×匯率，日期取聯集、休市那邊沿用前一天，不會漏掉任何一天的報酬"""
+    lv = (1 + r.dropna()).cumprod()
+    f = fx.reindex(lv.index.union(fx.index)).ffill()
+    v = (lv.reindex(f.index).ffill() * f).dropna()
+    return v[v.index >= r.dropna().index[0]].pct_change().dropna()
 
 
 def cagr(r):
-    r = r.dropna(); return (1 + r).prod() ** (252 / len(r)) - 1
+    # 年化用實際經過的日曆時間：台股、美股一年的交易日數不同，用 252 天換算會高估
+    r = r.dropna()
+    yrs = (r.index[-1] - r.index[0]).days / 365.25
+    return (1 + r).prod() ** (1 / yrs) - 1
 
 
 def mdd(r):
@@ -111,14 +117,18 @@ say([""])
 
 
 def mix(parts):
-    df = pd.concat([p for _, p in parts], axis=1, sort=True).dropna()
+    """parts: list[(weight, returns)]。各自累積成淨值、日期取聯集並沿用前一天（台美休市日不同，
+    直接 dropna 會整天丟掉另一邊的報酬），再依期末權重再平衡"""
+    lv = pd.concat([(1 + p.dropna()).cumprod() for _, p in parts], axis=1, sort=True).ffill()
+    lv = lv[lv.notna().all(axis=1)]
+    df = lv.pct_change().fillna(0)
     w0 = np.array([w for w, _ in parts]); h = w0.copy(); out = []
-    ye = set(df.groupby(df.index.year).tail(1).index)
+    reb = set(df.groupby(df.index.year).tail(1).index)
     for d, row in df.iterrows():
         h = h * (1 + row.to_numpy()); t = h.sum(); out.append(t)
-        if d in ye:
+        if d in reb:
             h = w0 * t
-    e = pd.Series(out, df.index)
+    e = pd.Series(out, df.index) / w0.sum()
     return e.pct_change().fillna(e.iloc[0] - 1)
 
 

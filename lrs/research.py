@@ -44,8 +44,10 @@ def lev(r, k):
 
 
 def cagr(r):
+    # 年化用實際經過的日曆時間：台股、美股一年的交易日數不同，用 252 天換算會高估
     r = r.dropna()
-    return (1 + r).prod() ** (252 / len(r)) - 1
+    yrs = (r.index[-1] - r.index[0]).days / 365.25
+    return (1 + r).prod() ** (1 / yrs) - 1
 
 
 def maxdd(r):
@@ -250,19 +252,19 @@ def strat_returns(r1, kind, k=3):
 
 
 def mix(parts, freq="QE"):
-    """parts: list[(weight, returns)]；依 freq 再平衡"""
-    df = pd.concat([p[1] for p in parts], axis=1).dropna()
-    w0 = np.array([p[0] for p in parts])
-    val = []; hold = w0.copy()
+    """parts: list[(weight, returns)]。各自累積成淨值、日期取聯集並沿用前一天（台美休市日不同，
+    直接 dropna 會整天丟掉另一邊的報酬），再依期末權重再平衡"""
+    lv = pd.concat([(1 + p.dropna()).cumprod() for _, p in parts], axis=1, sort=True).ffill()
+    lv = lv[lv.notna().all(axis=1)]
+    df = lv.pct_change().fillna(0)
+    w0 = np.array([w for w, _ in parts]); h = w0.copy(); out = []
     reb = set(df.groupby(df.index.to_period(freq[0])).tail(1).index)
-    out = []
     for d, row in df.iterrows():
-        hold = hold * (1 + row.to_numpy())
-        tot = hold.sum(); out.append(tot)
+        h = h * (1 + row.to_numpy()); t = h.sum(); out.append(t)
         if d in reb:
-            hold = w0 * tot
-    eq = pd.Series(out, df.index)
-    return eq.pct_change().fillna(eq.iloc[0] - 1)
+            h = w0 * t
+    e = pd.Series(out, df.index) / w0.sum()
+    return e.pct_change().fillna(e.iloc[0] - 1)
 
 
 def row(lab, r, y0):

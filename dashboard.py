@@ -336,8 +336,15 @@ td.wrapc{white-space:normal;min-width:120px;max-width:170px}
 .ribbon{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:11px;color:var(--mute);margin:4px}
 .ribbon i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:3px;vertical-align:-1px}
 </style></head><body><div class="wrap">
-<div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><h1>十倍股追蹤器</h1>
-<button id="theme" style="border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:99px;padding:5px 12px;font:inherit;font-size:13px;cursor:pointer"></button></div>
+<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap"><h1>十倍股追蹤器</h1><span id="age" class="small"></span></div>
+<div style="display:flex;gap:8px;align-items:center;position:relative">
+<button id="refresh" style="border:1px solid var(--acc);background:var(--acc);color:#fff;border-radius:99px;padding:5px 12px;font:inherit;font-size:13px;font-weight:600;cursor:pointer">🔄 立即更新</button>
+<div id="refreshTip" style="display:none;position:absolute;right:0;top:38px;z-index:20;width:290px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13px;box-shadow:0 6px 24px rgba(0,0,0,.35)">
+ 已開啟 GitHub 的更新頁面（要登入你的 GitHub）：<br>① 按右邊的「<b>Run workflow</b>」<br>② 再按綠色的「<b>Run workflow</b>」<br>③ 約 <b>5～8 分鐘</b>後重新整理這一頁<br>
+ <span class="small">每天也會自動更新一次（排程台灣 15:37，GitHub 常延遲到晚上）。</span>
+ <div style="text-align:right;margin-top:6px"><a href="#" id="refreshClose" style="color:var(--acc)">知道了</a></div></div>
+<button id="theme" style="border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:99px;padding:5px 12px;font:inherit;font-size:13px;cursor:pointer"></button></div></div>
 <div class="sub" id="sub"></div>
 <div style="display:flex;flex-wrap:wrap;align-items:center"><div class="seg" id="mk"><button data-m="" class="on">全部</button><button data-m="台股">台股</button><button data-m="美股">美股</button></div>
 <button class="manbtn" id="manbtn" style="margin-top:10px">📖 說明書</button></div>
@@ -780,6 +787,15 @@ document.getElementById("mantext").innerHTML=D.manual||"（找不到說明書）
 document.getElementById("manbtn").onclick=()=>document.getElementById("man").classList.add("open");
 document.getElementById("man").onclick=e=>{if(e.target.id=="man")e.target.classList.remove("open")};
 document.addEventListener("keydown",e=>{if(e.key=="Escape")document.getElementById("man").classList.remove("open")});
+/* ---------- 立即更新／資料新鮮度 ---------- */
+document.getElementById("refresh").onclick=()=>{window.open("https://github.com/BeckWang888/10X/actions/workflows/update.yml","_blank","noopener");
+ document.getElementById("refreshTip").style.display="block"};
+document.getElementById("refreshClose").onclick=e=>{e.preventDefault();document.getElementById("refreshTip").style.display="none"};
+(()=>{const m=(D.time||"").match(/(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/);if(!m)return;
+ const t=Date.UTC(+m[1],+m[2]-1,+m[3],+m[4]-8,+m[5]);   // 台灣時間 → UTC
+ const h=(Date.now()-t)/36e5, txt=h<1?"剛剛":h<24?`${Math.floor(h)} 小時前`:`${Math.floor(h/24)} 天前`;
+ const el=document.getElementById("age");el.innerHTML=`最後更新：<b style="color:${h>30?"var(--up)":"var(--ink)"}">${txt}</b>${h>30?"（可按立即更新）":""}`})();
+
 /* ---------- 深色／淺色 ---------- */
 const themeBtn=document.getElementById("theme");
 const setThemeLabel=()=>themeBtn.textContent=document.documentElement.dataset.theme==="light"?"🌙 深色":"☀️ 淺色";
